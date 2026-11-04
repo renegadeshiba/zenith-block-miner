@@ -1,0 +1,43 @@
+name: Release
+
+# Pushing to a release/* branch builds the plugin, runs the tests and publishes a GitHub release
+# for the version in gradle.properties, using .github/release-notes.md as its description.
+on:
+  push:
+    branches:
+      - "release/*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Build and test
+        run: |
+          chmod +x ./gradlew
+          ./gradlew build
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(grep '^plugin_version=' gradle.properties | cut -d'=' -f2 | tr -d '\r')
+          if gh release view "v$version" > /dev/null 2>&1; then
+            echo "Release v$version already exists; leaving it alone."
+            exit 0
+          fi
+          gh release create "v$version" "build/libs/BlockMiner-$version.jar" \
+            --title "Block Miner $version" \
+            --notes-file .github/release-notes.md \
+            --target "$GITHUB_SHA"

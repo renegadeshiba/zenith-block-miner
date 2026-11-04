@@ -1,0 +1,8 @@
+* text=auto
+
+# Keep the Unix Gradle launcher usable when cloned on Linux/macOS.
+/gradlew text eol=lf
+/gradlew.bat text eol=crlf
+
+# Do not apply line-ending conversion to the wrapper binary.
+/gradle/wrapper/gradle-wrapper.jar binary
