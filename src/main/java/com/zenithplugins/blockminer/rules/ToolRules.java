@@ -1,9 +1,12 @@
 package com.zenithplugins.blockminer.rules;
 
+import com.zenith.mc.enchantment.EnchantmentData;
+import com.zenith.mc.enchantment.EnchantmentRegistry;
 import com.zenith.mc.item.ItemData;
 import com.zenith.mc.item.ItemRegistry;
 import com.zenith.mc.item.ToolType;
 import com.zenith.util.ItemUtil;
+import com.zenithplugins.blockminer.rules.TargetItems.ToolNeed;
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponentTypes;
 import org.geysermc.mcprotocollib.protocol.data.game.item.component.ItemEnchantments;
@@ -36,15 +39,32 @@ public final class ToolRules {
         return ItemUtil.getMaxDamage(stack) > 0 && ItemUtil.getDamageUntilBreak(stack) <= threshold;
     }
 
+    /** True if this tool will give the item that's wanted. */
+    public static boolean meets(ToolNeed need, @Nullable ItemStack stack) {
+        return switch (need) {
+            case ANY -> true;
+            case NO_SILK_TOUCH -> !hasEnchantment(stack, EnchantmentRegistry.SILK_TOUCH.get());
+            case FORTUNE -> hasEnchantment(stack, EnchantmentRegistry.FORTUNE.get())
+                && !hasEnchantment(stack, EnchantmentRegistry.SILK_TOUCH.get());
+            case SILK_TOUCH -> hasEnchantment(stack, EnchantmentRegistry.SILK_TOUCH.get());
+        };
+    }
+
+    private static boolean hasEnchantment(@Nullable ItemStack stack, EnchantmentData enchantment) {
+        if (stack == null) return false;
+        ItemEnchantments enchantments = stack.getDataComponentsOrEmpty().get(DataComponentTypes.ENCHANTMENTS);
+        return enchantments != null && enchantments.getEnchantments().containsKey(enchantment.id());
+    }
+
     /**
      * How well {@code candidate} replaces {@code worn}, higher being better, or -1 if it can't. It has
-     * to be the same kind of tool and not worn itself. The same item with the same enchantments is
-     * preferred, so a Fortune pickaxe isn't swapped for a Silk Touch one if there's a choice, and
-     * after that whichever has the most durability.
+     * to be the same kind of tool, not worn itself, and still give the item that's wanted. The same
+     * item with the same enchantments is preferred, and after that whichever has the most durability.
      */
-    public static long replacementScore(@Nullable ItemStack candidate, ItemStack worn, int threshold) {
+    public static long replacementScore(@Nullable ItemStack candidate, ItemStack worn, int threshold, ToolNeed need) {
         ToolType type = miningToolType(worn);
         if (type == null || miningToolType(candidate) != type || isWorn(candidate, threshold)) return -1;
+        if (!meets(need, candidate)) return -1;
         long score = ItemUtil.getDamageUntilBreak(candidate);
         if (candidate.getId() == worn.getId()) score += SAME_ITEM_SCORE;
         if (Objects.equals(enchantments(candidate), enchantments(worn))) score += SAME_ENCHANTMENTS_SCORE;

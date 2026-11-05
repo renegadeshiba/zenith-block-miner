@@ -1,19 +1,29 @@
 package com.zenithplugins.blockminer.module;
 
+import com.zenith.mc.block.Block;
 import com.zenith.mc.item.ItemData;
 import com.zenith.mc.item.ItemRegistry;
+import com.zenith.util.ItemUtil;
 import com.zenithplugins.blockminer.rules.StorageRules;
+import com.zenithplugins.blockminer.rules.TargetItems.ToolNeed;
 import com.zenithplugins.blockminer.rules.ToolRules;
 import org.geysermc.mcprotocollib.protocol.data.game.inventory.ClickItemAction;
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 
+import java.util.List;
+import java.util.function.Supplier;
+import java.util.function.ToLongFunction;
+
 import static com.zenithplugins.blockminer.BlockMinerPlugin.PLUGIN_CONFIG;
 
 /**
- * Replaces a worn tool: takes the shulker box with the best fresh tool out of the ender chest, swaps
- * the worn tool for it, and puts the shulker box back with the worn tool inside.
+ * Gets the bot the tool it needs. Replaces a worn tool with a fresh one from a shulker box in the ender
+ * chest, leaving the worn one inside, and sorts out the hotbar when what's on it would give the wrong
+ * item, such as a Silk Touch pickaxe when the bot is after diamonds.
  */
 final class ToolSwapErrand {
+
+    private static final int HOTBAR_SLOTS = 9;
 
     private final BlockMinerModule module;
     private final Bot bot;
@@ -27,22 +37,90 @@ final class ToolSwapErrand {
         this.storage = storage;
     }
 
-    void run(ItemStack worn) {
+    void run(ItemStack worn, ToolNeed need) {
         int threshold = PLUGIN_CONFIG.toolDurabilityThreshold;
         ItemData wornItem = ItemRegistry.REGISTRY.get(worn.getId());
+        ToLongFunction<ItemStack> score = tool -> ToolRules.replacementScore(tool, worn, threshold, need);
 
-        ItemData shulkerItem = takeToolShulker(worn, threshold, wornItem);
-        int[] pos = bot.placeBeside(shulkerItem);
-        bot.rememberPlacedShulker(pos);
-        bot.openContainer(pos, "The tool shulker box");
-        swapInOpenContainer(worn, threshold);
-        space.breakAndPickUp(pos, shulkerItem);
-        bot.forgetPlacedShulker();
-        storage.returnCarriedShulkers();
+        fromToolShulker(
+            score,
+            "No shulker box in the ender chest has a fresh replacement for the worn " + wornItem.name()
+                + " that's " + need.description(),
+            () -> {
+                var wornSlots = bot.playerSlots(stack -> stack.getId() == worn.getId() && ToolRules.isWorn(stack, threshold));
+                if (wornSlots.isEmpty()) throw ErrandFailed.retry("Couldn't find the worn tool in the inventory");
+                return wornSlots;
+            }
+        );
         module.info("Swapped the worn {} for a fresh one", wornItem.name());
     }
 
-    private ItemData takeToolShulker(ItemStack worn, int threshold, ItemData wornItem) {
+    /**
+     * Gets the right tool onto the hotbar and any tool that would be picked instead off it. Fetches the
+     * tool from a shulker box in the ender chest if the bot isn't carrying one.
+     */
+    void ensureRightTool(List<Block> blocks, ToolNeed need) {
+        int threshold = PLUGIN_CONFIG.toolDurabilityThreshold;
+        // One pass per hotbar slot is plenty, since each one moves a wrong tool off the hotbar.
+        for (int pass = 0; pass <= HOTBAR_SLOTS; pass++) {
+            Block block = ToolChoice.firstWithWrongTool(blocks, need);
+            if (block == null) return;
+
+            int hotbarSlot = ToolChoice.hotbarSlotFor(block);
+            List<Integer> carried = bot.mainInventorySlots(stack ->
+                ToolChoice.suits(stack, block, need) && !ToolRules.isWorn(stack, threshold));
+            if (!carried.isEmpty()) {
+                bot.swapWithHotbar(carried.getFirst(), hotbarSlot);
+                continue;
+            }
+
+            if (bot.hotbarSlots(stack -> ToolChoice.suits(stack, block, need)).isEmpty()) {
+                fetchTool(block, need, threshold);
+                continue;
+            }
+
+            // The right tool is on the hotbar, but a faster wrong one is getting picked ahead of it.
+            List<Integer> notTools = bot.mainInventorySlots(stack -> ToolRules.miningToolType(stack) == null);
+            if (notTools.isEmpty()) {
+                throw ErrandFailed.stop("Couldn't make room in the inventory to move a wrong tool off the hotbar");
+            }
+            bot.swapWithHotbar(notTools.getFirst(), hotbarSlot);
+        }
+        throw ErrandFailed.retry("Couldn't get the hotbar sorted out for mining");
+    }
+
+    private void fetchTool(Block block, ToolNeed need, int threshold) {
+        ToLongFunction<ItemStack> score = tool -> {
+            if (!ToolChoice.suits(tool, block, need) || ToolRules.isWorn(tool, threshold)) return -1;
+            return ItemUtil.getDamageUntilBreak(tool);
+        };
+        fromToolShulker(
+            score,
+            "Mining " + block.name() + " for what you asked for takes " + need.description()
+                + ", but there isn't a fresh one on the bot or in a shulker box in the ender chest",
+            // The wrong tool for this block goes in the shulker box to make room. Other tools stay put.
+            () -> bot.playerSlots(stack -> ToolChoice.worksOn(stack, block) && !ToolRules.meets(need, stack))
+        );
+        module.info("Fetched {} to mine {}", need.description(), block.name());
+    }
+
+    /**
+     * Takes the tool scoring highest out of a shulker box from the ender chest. It takes the place of
+     * the first of {@code toReplace}, which goes in the shulker box, or goes in an empty slot if that's
+     * empty. The tool ends up in the replaced tool's slot.
+     */
+    private void fromToolShulker(ToLongFunction<ItemStack> score, String ifNone, Supplier<List<Integer>> toReplace) {
+        ItemData shulkerItem = takeToolShulker(score, ifNone);
+        int[] pos = bot.placeBeside(shulkerItem);
+        bot.rememberPlacedShulker(pos);
+        bot.openContainer(pos, "The tool shulker box");
+        takeOutOfOpenContainer(score, toReplace);
+        space.breakAndPickUp(pos, shulkerItem);
+        bot.forgetPlacedShulker();
+        storage.returnCarriedShulkers();
+    }
+
+    private ItemData takeToolShulker(ToLongFunction<ItemStack> score, String ifNone) {
         bot.openEnderChest();
         int bestSlot = -1;
         long bestScore = -1;
@@ -50,16 +128,16 @@ final class ToolSwapErrand {
             ItemStack stack = bot.stackAt(slot);
             if (!StorageRules.isShulker(stack)) continue;
             for (ItemStack tool : StorageRules.contents(stack)) {
-                long score = ToolRules.replacementScore(tool, worn, threshold);
-                if (score > bestScore) {
-                    bestScore = score;
+                long toolScore = score.applyAsLong(tool);
+                if (toolScore > bestScore) {
+                    bestScore = toolScore;
                     bestSlot = slot;
                 }
             }
         }
         if (bestSlot == -1) {
             bot.closeContainer();
-            throw ErrandFailed.stop("No shulker box in the ender chest has a fresh replacement for the worn " + wornItem.name());
+            throw ErrandFailed.stop(ifNone);
         }
 
         // The inventory is usually full on purpose, and the shulker box needs a slot to come out into.
@@ -75,43 +153,51 @@ final class ToolSwapErrand {
         return shulkerItem;
     }
 
+    private void takeOutOfOpenContainer(ToLongFunction<ItemStack> score, Supplier<List<Integer>> toReplace) {
+        int freshSlot = -1;
+        long bestScore = -1;
+        for (int slot : bot.containerSlots()) {
+            long toolScore = score.applyAsLong(bot.stackAt(slot));
+            if (toolScore > bestScore) {
+                bestScore = toolScore;
+                freshSlot = slot;
+            }
+        }
+        if (freshSlot == -1) throw ErrandFailed.retry("The tool shulker box no longer has that tool in it");
+
+        // Found here because placing the shulker box can move things around the hotbar.
+        List<Integer> replaced = toReplace.get();
+        if (replaced.isEmpty()) {
+            space.ensureFreeSlot();
+            moveToEmptySlot(freshSlot);
+        } else {
+            swapInOpenContainer(freshSlot, replaced.getFirst(), score);
+        }
+    }
+
+    private void moveToEmptySlot(int freshSlot) {
+        int emptySlot = bot.emptyPlayerSlots().getFirst();
+        bot.click(freshSlot, ClickItemAction.LEFT_CLICK);
+        bot.click(emptySlot, ClickItemAction.LEFT_CLICK);
+        boolean moved = bot.waitFor(
+            () -> bot.cursorIsEmpty() && bot.isEmptySlot(freshSlot) && !bot.isEmptySlot(emptySlot),
+            Bot.ACTION_TIMEOUT_MS);
+        if (!moved) throw ErrandFailed.retry("Moving the tool out of the shulker box didn't go through");
+    }
+
     /**
      * Swaps with three clicks rather than shift-clicking, because it works with a full inventory or a
-     * full shulker box: pick up the fresh tool, click it onto the worn one to pick that up instead, and
-     * put the worn one down where the fresh one was. The fresh tool ends up in the worn one's slot.
+     * full shulker box: pick up the fresh tool, click it onto the old one to pick that up instead, and
+     * put the old one down where the fresh one was. The fresh tool ends up in the old one's slot.
      */
-    private void swapInOpenContainer(ItemStack worn, int threshold) {
-        int freshSlot = bestFreshToolSlot(worn, threshold);
-        if (freshSlot == -1) throw ErrandFailed.retry("The tool shulker box no longer has a fresh tool in it");
-
-        // Found again here because placing the shulker box can move things around the hotbar.
-        var wornSlots = bot.playerSlots(stack -> stack.getId() == worn.getId() && ToolRules.isWorn(stack, threshold));
-        if (wornSlots.isEmpty()) throw ErrandFailed.retry("Couldn't find the worn tool in the inventory");
-        int wornSlot = wornSlots.getFirst();
-
+    private void swapInOpenContainer(int freshSlot, int oldSlot, ToLongFunction<ItemStack> score) {
         bot.click(freshSlot, ClickItemAction.LEFT_CLICK);
-        bot.click(wornSlot, ClickItemAction.LEFT_CLICK);
+        bot.click(oldSlot, ClickItemAction.LEFT_CLICK);
         bot.click(freshSlot, ClickItemAction.LEFT_CLICK);
 
         boolean swapped = bot.waitFor(
-            () -> bot.cursorIsEmpty()
-                && ToolRules.isWorn(bot.stackAt(freshSlot), threshold)
-                && !ToolRules.isWorn(bot.stackAt(wornSlot), threshold)
-                && ToolRules.miningToolType(bot.stackAt(wornSlot)) != null,
+            () -> bot.cursorIsEmpty() && score.applyAsLong(bot.stackAt(oldSlot)) >= 0,
             Bot.ACTION_TIMEOUT_MS);
         if (!swapped) throw ErrandFailed.retry("The tool swap didn't go through");
-    }
-
-    private int bestFreshToolSlot(ItemStack worn, int threshold) {
-        int bestSlot = -1;
-        long bestScore = -1;
-        for (int slot : bot.containerSlots()) {
-            long score = ToolRules.replacementScore(bot.stackAt(slot), worn, threshold);
-            if (score > bestScore) {
-                bestScore = score;
-                bestSlot = slot;
-            }
-        }
-        return bestSlot;
     }
 }

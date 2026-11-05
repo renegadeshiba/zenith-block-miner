@@ -84,7 +84,7 @@ final class CraftingErrand {
     }
 
     private boolean isTarget(ItemData item) {
-        return TargetItems.itemsFor(PLUGIN_CONFIG.blocks).contains(item.name());
+        return TargetItems.itemsFor(PLUGIN_CONFIG.wantedItems).contains(item.name());
     }
 
     private int craftsToMake(ItemData input) {

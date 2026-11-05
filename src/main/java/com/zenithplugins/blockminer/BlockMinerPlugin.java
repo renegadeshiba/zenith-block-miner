@@ -8,7 +8,7 @@ import com.zenithplugins.blockminer.module.BlockMinerModule;
 import net.kyori.adventure.text.logger.slf4j.ComponentLogger;
 
 /**
- * Mines chosen block types around the bot. When the inventory fills up it crafts items like diamonds
+ * Mines for the items you choose around the bot. When the inventory fills up it crafts items like diamonds
  * into blocks and stores everything in shulker boxes from the ender chest, and it swaps worn tools
  * for fresh ones from a tool shulker in the ender chest.
  *
@@ -17,7 +17,7 @@ import net.kyori.adventure.text.logger.slf4j.ComponentLogger;
 @Plugin(
     id = BlockMinerPlugin.PLUGIN_ID,
     version = BlockMinerPlugin.VERSION,
-    description = "Mines chosen blocks, stores what it mines in shulker boxes from the ender chest, "
+    description = "Mines for the items you choose, stores what it mines in shulker boxes from the ender chest, "
         + "and swaps worn tools for fresh ones.",
     url = "https://github.com/renegadeshiba/zenith-block-miner",
     authors = {"renegadeshiba"},

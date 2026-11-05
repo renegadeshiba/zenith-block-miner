@@ -43,7 +43,7 @@ final class StorageErrand {
             : Set.of();
         return InventoryPlan.slotsToStore(
             bot.playerStacks(),
-            TargetItems.itemsFor(PLUGIN_CONFIG.blocks),
+            TargetItems.itemsFor(PLUGIN_CONFIG.wantedItems),
             PLUGIN_CONFIG.keepItems,
             bridgingItems,
             PLUGIN_CONFIG.craftIntoBlocks
@@ -54,7 +54,7 @@ final class StorageErrand {
         return InventoryPlan.needsStoring(
             bot.playerStacks(),
             bot.freeSlots(),
-            TargetItems.itemsFor(PLUGIN_CONFIG.blocks),
+            TargetItems.itemsFor(PLUGIN_CONFIG.wantedItems),
             PLUGIN_CONFIG.stacksOfRoomToKeep,
             !slotsToStore().isEmpty()
         );
@@ -65,7 +65,7 @@ final class StorageErrand {
         return InventoryPlan.hasNoRoom(
             bot.playerStacks(),
             bot.freeSlots(),
-            TargetItems.itemsFor(PLUGIN_CONFIG.blocks),
+            TargetItems.itemsFor(PLUGIN_CONFIG.wantedItems),
             !slotsToStore().isEmpty()
         );
     }

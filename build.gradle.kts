@@ -41,5 +41,8 @@ dependencies {
 tasks {
     test {
         useJUnitPlatform()
+        // ZenithProxy starts writing log files to the working directory once a test touches it.
+        workingDir = layout.buildDirectory.dir("test-run").get().asFile
+        doFirst { workingDir.mkdirs() }
     }
 }

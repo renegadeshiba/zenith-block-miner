@@ -11,6 +11,8 @@ import com.zenith.mc.item.ItemRegistry;
 import com.zenith.module.api.Module;
 import com.zenithplugins.blockminer.BlockMinerConfig.PlacedBlock;
 import com.zenithplugins.blockminer.rules.StorageRules;
+import com.zenithplugins.blockminer.rules.TargetItems;
+import com.zenithplugins.blockminer.rules.TargetItems.ToolNeed;
 import com.zenithplugins.blockminer.rules.ToolRules;
 import org.jspecify.annotations.Nullable;
 
@@ -38,6 +40,7 @@ public class BlockMinerModule extends Module {
     private static final int MAX_FAILED_ERRANDS = 3;
     // While the bot is still building up target items, how often it stops to fill more slots with them.
     private static final int FILL_SLOTS_INTERVAL_TICKS = 20 * 30;
+    private static final int TOOL_CHECK_INTERVAL_TICKS = 20;
 
     private final Bot bot = new Bot(this);
     private final InventorySpace space = new InventorySpace(this, bot);
@@ -51,6 +54,9 @@ public class BlockMinerModule extends Module {
     private volatile long nextErrandTick;
     private long nextFillTick;
     private int failedErrands;
+    private volatile boolean wrongTool;
+    // Zero makes the next tick check, which comes before any mining starts.
+    private volatile long nextToolCheckTick;
 
     private volatile @Nullable PathingRequestFuture mining;
     private long miningStartedTick;
@@ -78,6 +84,7 @@ public class BlockMinerModule extends Module {
         nextErrandTick = 0;
         nextFillTick = 0;
         nextMineTick = 0;
+        nextToolCheckTick = 0;
         reportedNothingFound = false;
         status = "Starting";
     }
@@ -128,6 +135,7 @@ public class BlockMinerModule extends Module {
     public void blocksChanged() {
         stopMining();
         nextMineTick = 0;
+        nextToolCheckTick = 0;
         reportedNothingFound = false;
     }
 
@@ -150,12 +158,21 @@ public class BlockMinerModule extends Module {
         }
         reportedBreakingOff = false;
 
-        Block[] blocks = PLUGIN_CONFIG.blocks.stream()
+        Block[] blocks = TargetItems.blocksToMine(PLUGIN_CONFIG.wantedItems).stream()
             .map(BlockRegistry.REGISTRY::get)
             .filter(Objects::nonNull)
             .toArray(Block[]::new);
         if (blocks.length == 0) {
-            status = "Waiting: no blocks to mine";
+            status = "Waiting: nothing chosen to mine";
+            return;
+        }
+
+        if (TargetItems.combinedToolNeed(PLUGIN_CONFIG.wantedItems) == null) {
+            status = "Waiting: the chosen items need different tools, so remove one with `blockminer remove`";
+            return;
+        }
+        if (toolNeed() != ToolNeed.ANY && !CONFIG.client.extra.pathfinder.autoTool) {
+            status = "Waiting: the pathfinder's autoTool setting is off, so it can't use the right tool";
             return;
         }
 
@@ -192,7 +209,27 @@ public class BlockMinerModule extends Module {
         return ToolRules.isWorn(bot.heldStack(), PLUGIN_CONFIG.toolDurabilityThreshold)
             || storage.isNeeded()
             || bot.placedShulkerIsInThisWorld()
+            || wrongToolOnHotbar()
             || (tick >= nextFillTick && space.isWorthFilling());
+    }
+
+    /** What the tool has to be like for the chosen items. Conflicting items don't get mined at all. */
+    private static ToolNeed toolNeed() {
+        ToolNeed need = TargetItems.combinedToolNeed(PLUGIN_CONFIG.wantedItems);
+        return need != null ? need : ToolNeed.ANY;
+    }
+
+    /**
+     * True if the pathfinder would mine with a tool that gives the wrong item. Only looked at now and
+     * then, since it has to work out each tool's speed against each block.
+     */
+    private boolean wrongToolOnHotbar() {
+        if (tick >= nextToolCheckTick) {
+            nextToolCheckTick = tick + TOOL_CHECK_INTERVAL_TICKS;
+            wrongTool = CONFIG.client.extra.pathfinder.autoTool && ToolChoice.firstWithWrongTool(
+                ToolChoice.blocksNeedingARightTool(PLUGIN_CONFIG.wantedItems), toolNeed()) != null;
+        }
+        return wrongTool;
     }
 
     private void startErrand() {
@@ -211,7 +248,12 @@ public class BlockMinerModule extends Module {
 
             if (ToolRules.isWorn(bot.heldStack(), PLUGIN_CONFIG.toolDurabilityThreshold)) {
                 status = "Swapping a worn tool";
-                toolSwap.run(bot.heldStack());
+                toolSwap.run(bot.heldStack(), toolNeed());
+            }
+            if (CONFIG.client.extra.pathfinder.autoTool) {
+                status = "Getting the right tool";
+                toolSwap.ensureRightTool(ToolChoice.blocksNeedingARightTool(PLUGIN_CONFIG.wantedItems), toolNeed());
+                wrongTool = false;
             }
             if (storage.isNeeded()) {
                 status = "Storing items";
@@ -242,6 +284,8 @@ public class BlockMinerModule extends Module {
                 debug("Couldn't close the container after an errand: {}", e.getMessage());
             }
             BARITONE.stop();
+            // An errand moves things around, so look at the hotbar again before mining.
+            nextToolCheckTick = 0;
             // Last, because the next tick can start mining as soon as this is clear.
             errand = null;
         }

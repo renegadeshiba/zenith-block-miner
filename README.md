@@ -1,10 +1,11 @@
 # Block Miner
 
-A ZenithProxy plugin for Minecraft 1.21.4 that mines the block types you choose and keeps going by
-itself. It keeps junk out of its inventory entirely by filling every empty slot with one of the item
-it's mining. When its stacks fill up, it crafts items like diamonds into blocks and stores everything
-in shulker boxes from the ender chest. When a tool is nearly broken, it swaps it for a fresh one from
-a tool shulker box in the ender chest.
+A ZenithProxy plugin for Minecraft 1.21.4 that mines for the items you choose and keeps going by
+itself. You say what you want, and it works out which blocks to mine and what tool to mine them with.
+It keeps junk out of its inventory entirely by filling every empty slot with one of the item it's
+after. When its stacks fill up, it crafts items like diamonds into blocks and stores everything in
+shulker boxes from the ender chest. When a tool is nearly broken, it swaps it for a fresh one from a
+tool shulker box in the ender chest.
 
 ## Requirements
 
@@ -30,7 +31,8 @@ Before turning it on:
 
 - Put these in the bot's ender chest:
   - **Empty shulker boxes** of any colour, for storing what it mines.
-  - **A shulker box of fresh tools**, for replacing worn ones.
+  - **A shulker box of fresh tools**, for replacing worn ones. Include the right kind for what you're
+    after: see [Choosing what to mine](#choosing-what-to-mine).
 - Give the bot an **ender chest** in case none is loaded nearby, and a **crafting table** if it should
   craft items into blocks and there isn't one nearby.
 - Give the bot **a stack of what it's mining**, such as diamonds for diamond ore. It's optional, but
@@ -40,26 +42,55 @@ Before turning it on:
 - Run it well away from wardens, with nothing valuable on the bot for now. See
   [Things to know](#things-to-know).
 
-Then choose what to mine and turn it on:
+Then say what you want and turn it on:
 
 ```
-blockminer add ancient_debris
+blockminer add diamond
 blockminer on
 ```
 
-Ores and their deepslate forms are separate blocks, so to mine both, add both:
+## Choosing what to mine
 
-```
-blockminer add diamond_ore
-blockminer add deepslate_diamond_ore
-```
+Ask for the item you want to end up with. That decides which blocks get mined and with what tool:
+
+| You ask for | It mines | With |
+|---|---|---|
+| `diamond` | `diamond_ore`, `deepslate_diamond_ore` | a Fortune tool |
+| `diamond_ore` | `diamond_ore` | a Silk Touch tool |
+| `cobbled_deepslate` | `deepslate`, `cobbled_deepslate` | a tool without Silk Touch |
+| `deepslate` | `deepslate` | a Silk Touch tool |
+| `ancient_debris` | `ancient_debris` | any tool |
+
+- **Fortune tool:** `coal`, `raw_iron`, `raw_copper`, `raw_gold`, `redstone`, `lapis_lazuli`, `diamond`,
+  `emerald`, `quartz`, `gold_nugget`, `glowstone_dust`, `amethyst_shard` and `prismarine_crystals`. These
+  all come from both forms of their ore where there are two.
+- **No Silk Touch:** `cobblestone`, `cobbled_deepslate` and `clay_ball`. Fortune doesn't get more of these,
+  so a plain tool is just as good as a Fortune one.
+- **Silk Touch tool:** the blocks those items come from, such as `diamond_ore`, `stone`, `deepslate` and
+  `glowstone`. Also `ice`, `packed_ice`, `blue_ice`, `glass`, `bookshelf`, `sculk` and `sculk_catalyst`, which
+  drop nothing useful without it.
+- **Anything else** that's a block is mined as that block with any tool, such as `obsidian` or `oak_log`.
+  Something that isn't a block and isn't listed here can't be added.
+
+`blockminer add` tells you what it will mine and with what, and `blockminer` shows it too.
+
+**Getting the right tool:** the pathfinder picks whichever tool on the hotbar breaks a block fastest, and
+it only looks at the hotbar. So before mining, the bot moves any wrong tool off the hotbar and the right
+one onto it. If it isn't carrying the right one, it fetches it from a tool shulker box in the ender chest,
+leaving the wrong one there. If there isn't one there either, it stops and tells you. The pathfinder's
+`autoTool` setting has to be on for this, which is the default.
+
+**Only one kind of tool at a time:** the pathfinder uses one tool for everything it's mining, so you can't
+ask for `diamond` and `diamond_ore` together, as one needs Fortune and the other Silk Touch. `blockminer add`
+tells you if that's the case. Asking for `diamond` and `cobbled_deepslate` is fine, because a Fortune tool
+suits both.
 
 ## Commands
 
 ```
 blockminer on/off
-blockminer add <block>
-blockminer remove <block>
+blockminer add <item>
+blockminer remove <item>
 blockminer clear
 blockminer fill on/off
 blockminer craft on/off
@@ -76,9 +107,10 @@ an errand lets the errand finish first, so a shulker box isn't left on the groun
 
 ### Mining
 
-The bot mines the nearest chosen block in the loaded chunks, using ZenithProxy's pathfinder, which also
-picks the tool and collects the drops. If there's nothing to mine, it looks again every 30 seconds, but
-it doesn't wander off to find more. The pathfinder's `allowBreak` setting has to be on.
+The bot mines the nearest block on its list in the loaded chunks, using ZenithProxy's pathfinder, which
+walks into each block it mines and so collects what drops. If there's nothing to mine, it looks again
+every 30 seconds, but it doesn't wander off to find more. The pathfinder's `allowBreak` setting has to be
+on.
 
 ### Keeping junk out
 
@@ -86,9 +118,8 @@ A player can only pick up an item if it fits in an empty slot or tops up a match
 puts one of its target item in every empty slot. With no empty slots left, the only thing it can pick
 up is more of what it's mining, and netherrack, stone and the like stay on the ground.
 
-The target item is what the chosen block drops, such as `diamond` for `diamond_ore`, and also the block
-itself, which is what Silk Touch gives. `blockminer` lists them. Anything with an unusual drop that the
-bot doesn't know about just won't get this protection.
+The target items are exactly the items you asked for, so when you ask for `diamond`, the cobbled deepslate
+from mining down to it stays on the ground.
 
 **Until it has enough to fill the slots**, it can still pick up junk, which gets stored like anything
 else. Every 30 seconds it fills as many slots as it can with what it has, so this eases off as it goes.
@@ -153,8 +184,9 @@ When the tool in hand has `toolDurability` or less left (5 by default), the bot:
 3. Breaks it, picks it back up, and puts it back in the ender chest.
 
 It looks for the same tool with the same enchantments first, then the same tool, then the same kind
-of tool (a diamond pickaxe for a netherite one, say), and takes whichever has the most durability. This
-covers pickaxes, axes, shovels and hoes.
+of tool (a diamond pickaxe for a netherite one, say), and takes whichever has the most durability. It
+only takes one that's right for what you asked for, so a worn Fortune pickaxe won't be replaced with a
+Silk Touch one when you're after diamonds. This covers pickaxes, axes, shovels and hoes.
 
 ### Collecting the shulker box
 
@@ -180,6 +212,7 @@ The bot stops mining, turns itself off and sends a notification when only you ca
 
 - no empty shulker boxes left
 - no fresh tool left
+- no tool of the kind that what you asked for needs
 - no ender chest available
 - the inventory is full of things it isn't allowed to store
 
@@ -199,7 +232,11 @@ the ground.
   mining, so the bot can walk straight past or into a warden. A warden could kill it, and it would drop
   whatever it's carrying.
 - Run this on its own. The pathfinder can only do one thing at a time, so another plugin moving the bot
-  at the same time, such as the sign placer, will conflict with it.
+  at the same time will conflict with it. If the sign plugin is installed, run both `signplacer off` and
+  `restock off`, because the restocker starts by itself whenever the bot is low on signs.
+- A drop that flies off somewhere can get left behind, unless it's also a block on the mining list. The
+  pathfinder only goes back for drops named after a block it's mining, so it goes back for cobbled
+  deepslate but not for diamonds. Normally that's not an issue, because it walks into each block it mines.
 - Junk it leaves on the ground can land in a slot the moment one frees up, such as while it's storing
   things. That's harmless: it just gets stored on the next trip.
 - A placed ender chest stays where the bot put it, so it can get broken if it ends up in the way of

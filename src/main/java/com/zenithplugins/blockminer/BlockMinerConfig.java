@@ -16,8 +16,11 @@ public class BlockMinerConfig {
     /** Master on/off switch for mining. */
     public boolean enabled = false;
 
-    /** Block names to mine, such as "ancient_debris". Ores and their deepslate forms are separate blocks. */
-    public List<String> blocks = new ArrayList<>();
+    /**
+     * The items the user wants, such as "diamond" or "diamond_ore". TargetItems works out what to mine
+     * to get them and what tool to use, so "diamond" takes a Fortune tool and "diamond_ore" Silk Touch.
+     */
+    public List<String> wantedItems = new ArrayList<>();
 
     /**
      * Fill every empty inventory slot with one of the item being mined, so nothing else can be picked

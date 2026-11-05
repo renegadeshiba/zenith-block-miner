@@ -40,7 +40,7 @@ final class InventorySpace {
     }
 
     private static Set<String> targetItems() {
-        return TargetItems.itemsFor(PLUGIN_CONFIG.blocks);
+        return TargetItems.itemsFor(PLUGIN_CONFIG.wantedItems);
     }
 
     /**
@@ -48,7 +48,7 @@ final class InventorySpace {
      * never be picked up. Junk can land there too, until the next time the bot stores things.
      */
     private int slotsToLeaveOpen() {
-        return TargetItems.kindsNotHeld(PLUGIN_CONFIG.blocks, InventoryPlan.heldItemNames(bot.playerStacks()));
+        return TargetItems.kindsNotHeld(PLUGIN_CONFIG.wantedItems, InventoryPlan.heldItemNames(bot.playerStacks()));
     }
 
     boolean isWorthFilling() {

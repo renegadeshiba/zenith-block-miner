@@ -42,6 +42,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntPredicate;
 import java.util.function.Predicate;
@@ -190,6 +191,28 @@ final class Bot {
         return slots;
     }
 
+    /** Slots of the bot's own main inventory, 9 to 35, holding a matching stack. Nothing can be open. */
+    List<Integer> mainInventorySlots(Predicate<ItemStack> filter) {
+        closeContainer();
+        return ownSlots(OWN_MAIN_START, OWN_HOTBAR_START, filter);
+    }
+
+    /** Slots of the bot's own hotbar, 36 to 44, holding a matching stack. Nothing can be open. */
+    List<Integer> hotbarSlots(Predicate<ItemStack> filter) {
+        closeContainer();
+        return ownSlots(OWN_HOTBAR_START, OWN_HOTBAR_END, filter);
+    }
+
+    private List<Integer> ownSlots(int from, int to, Predicate<ItemStack> filter) {
+        List<ItemStack> own = CACHE.getPlayerCache().getPlayerInventory();
+        List<Integer> slots = new ArrayList<>();
+        for (int slot = from; slot < to; slot++) {
+            ItemStack stack = own.get(slot);
+            if (!isEmpty(stack) && filter.test(stack)) slots.add(slot);
+        }
+        return slots;
+    }
+
     /** Everything in the player's inventory and hotbar, with its slot in the current container. */
     List<SlotStack> playerStacks() {
         List<SlotStack> stacks = new ArrayList<>();
@@ -310,6 +333,30 @@ final class Bot {
 
     private static boolean isItem(@Nullable ItemStack stack, int itemId) {
         return !isEmpty(stack) && stack.getId() == itemId;
+    }
+
+    /**
+     * Swaps a stack in the main inventory with a hotbar slot, 0 to 8, and waits until the server has
+     * gone along with it. Requests can be refused or dropped for a higher priority one, so it retries.
+     */
+    void swapWithHotbar(int mainSlot, int hotbarSlot) {
+        closeContainer();
+        List<ItemStack> own = CACHE.getPlayerCache().getPlayerInventory();
+        ItemStack moving = own.get(mainSlot);
+        BooleanSupplier arrived = () -> {
+            ItemStack now = CACHE.getPlayerCache().getPlayerInventory().get(OWN_HOTBAR_START + hotbarSlot);
+            return !isEmpty(now) && now.getId() == moving.getId()
+                && Objects.equals(now.getDataComponents(), moving.getDataComponents());
+        };
+        for (int attempt = 0; attempt < MAX_OPEN_ATTEMPTS; attempt++) {
+            INVENTORY.submit(InventoryActionRequest.builder()
+                .owner(module)
+                .priority(Baritone.getPriority() + 1)
+                .actions(new MoveToHotbarSlot(mainSlot, MoveToHotbarAction.from(hotbarSlot)))
+                .build());
+            if (waitFor(arrived, ACTION_TIMEOUT_MS / MAX_OPEN_ATTEMPTS)) return;
+        }
+        throw ErrandFailed.retry("Couldn't move " + itemName(moving.getId()) + " onto the hotbar");
     }
 
     /** The hotbar slot already holding the item, otherwise an empty one, otherwise the held one. */
