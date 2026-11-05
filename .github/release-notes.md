@@ -1,40 +1,35 @@
+## What's fixed
+
+**With nothing chosen, the bot emptied its inventory and then stood still.** 1.1.0 dropped the old block list when it was installed, and with no items chosen, the bot treated everything it was carrying as junk. It stored it all as soon as it connected, kept nothing to fill its slots with, and then had nothing to mine. Now, with nothing chosen, it leaves the inventory alone, sends you a notification, and waits for `blockminer add <item>`.
+
+**Spreading items through the inventory failed on a laggy connection.** The bot clicked faster than the server could reply, so a click could be refused, the errand would fail, and after three failures the bot would stop itself. Each click now waits for the server to confirm it. On a slow connection this takes a little longer, so filling all the slots can take several seconds.
+
+**It no longer starts errands the moment it connects.** It waits 5 seconds for the world and inventory to arrive first. That's what caused `No room to place ender_chest beside the bot` straight after connecting.
+
 ## What's changed
 
-**You now ask for the item you want, and the bot works out what to mine and with what tool.**
+**Junk gets thrown away instead of stored.** It was taking up space in your shulker boxes and causing extra trips to the ender chest. Only a fixed list of known junk gets thrown, such as `tuff`, `gravel`, `dirt`, `andesite`, `netherrack` and `cobblestone`. The [README](https://github.com/renegadeshiba/zenith-block-miner#throwing-junk-away) has the full list. Anything else still gets stored, so nothing valuable can be thrown away by mistake.
 
-| You ask for | It mines | With |
-|---|---|---|
-| `diamond` | `diamond_ore`, `deepslate_diamond_ore` | a Fortune tool |
-| `diamond_ore` | `diamond_ore` | a Silk Touch tool |
-| `cobbled_deepslate` | `deepslate`, `cobbled_deepslate` | a tool without Silk Touch |
-| `deepslate` | `deepslate` | a Silk Touch tool |
-| `ancient_debris` | `ancient_debris` | any tool |
-
-The [README](https://github.com/renegadeshiba/zenith-block-miner#choosing-what-to-mine) has the full list.
-
-- **It gets the right tool.** The pathfinder uses whichever tool on the hotbar is fastest, so the bot now moves wrong tools off the hotbar and the right one onto it. If it isn't carrying the right one, it fetches it from a tool shulker box in the ender chest. If there isn't one there either, it stops and tells you why.
-- **Worn tools get replaced with the right kind.** A worn Fortune pickaxe won't be replaced with a Silk Touch one when you're after diamonds.
-- **It only keeps what you asked for.** Ask for `diamond`, and the cobbled deepslate from mining down to it stays on the ground.
-- **It tells you what it will do.** `blockminer add` says what it will mine and with what, and tells you if an item needs a different tool from the ones you've already chosen.
+It never throws away an item you've asked for, anything on the keep list, or anything at all if no items are chosen. An item you've just removed from your list gets stored instead, while the bot is still carrying some, so switching from `cobbled_deepslate` to `diamond` doesn't throw away what it mined. To hold on to something on the junk list, use `blockminer keep add <item>`. Thrown items are gone after about 5 minutes.
 
 ## You need to do this
 
-**Choose your items again**, because the list has been replaced and what the names mean has changed. For example, `diamond_ore` now means the ore block itself, which takes Silk Touch. For diamonds, use `diamond`.
+If you installed 1.1.0, choose your items again:
 
 ```
-blockminer add diamond
+blockminer add cobbled_deepslate
 ```
 
-If the sign plugin is installed, run both `signplacer off` and `restock off` before mining. The restocker starts by itself whenever the bot is low on signs.
+Anything stored by mistake is in a shulker box in the ender chest, so nothing was lost. Giving the bot a stack of what it's after keeps junk out from the start.
 
 ## How this was tested
 
-The new tests run ZenithProxy's real tool choice over made-up hotbars, and check the rules for every item.
+The new tests run the bot's real slot filling and ZenithProxy's real click handling against a pretend server that follows vanilla's rules, with and without lag.
 
-**The moving and fetching of tools hasn't been run on a live server yet.** Please watch it the first time it has to sort out the hotbar or fetch a tool.
+**It hasn't been run on a live server yet.** Please watch the first time it stores items: it should keep one stack and spread it through the empty slots.
 
 ## Install
 
 ```
-plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.0/BlockMiner-1.1.0.jar
+plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.1/BlockMiner-1.1.1.jar
 ```
