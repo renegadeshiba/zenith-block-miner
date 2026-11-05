@@ -94,6 +94,7 @@ public class BlockMinerCommand extends Command {
                     return ERROR;
                 }
                 PLUGIN_CONFIG.wantedItems = wanted;
+                PLUGIN_CONFIG.stillToStore.remove(name);
                 MODULE.get(BlockMinerModule.class).blocksChanged();
                 c.getSource().getEmbed()
                     .title("Added " + name)
@@ -103,11 +104,16 @@ public class BlockMinerCommand extends Command {
             })))
             .then(literal("remove").then(argument("item", item()).executes(c -> {
                 String name = getItem(c, "item").name();
-                PLUGIN_CONFIG.wantedItems.remove(name);
+                if (PLUGIN_CONFIG.wantedItems.remove(name) && !PLUGIN_CONFIG.stillToStore.contains(name)) {
+                    PLUGIN_CONFIG.stillToStore.add(name);
+                }
                 MODULE.get(BlockMinerModule.class).blocksChanged();
                 c.getSource().getEmbed().title("Removed " + name);
             })))
             .then(literal("clear").executes(c -> {
+                for (String name : PLUGIN_CONFIG.wantedItems) {
+                    if (!PLUGIN_CONFIG.stillToStore.contains(name)) PLUGIN_CONFIG.stillToStore.add(name);
+                }
                 PLUGIN_CONFIG.wantedItems.clear();
                 MODULE.get(BlockMinerModule.class).blocksChanged();
                 c.getSource().getEmbed().title("Item List Cleared");

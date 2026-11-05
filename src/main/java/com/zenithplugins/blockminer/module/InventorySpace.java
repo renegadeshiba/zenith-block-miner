@@ -18,7 +18,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.function.BooleanSupplier;
 
+import static com.zenith.Globals.CONFIG;
 import static com.zenithplugins.blockminer.BlockMinerPlugin.PLUGIN_CONFIG;
 
 /**
@@ -49,6 +51,59 @@ final class InventorySpace {
      */
     private int slotsToLeaveOpen() {
         return TargetItems.kindsNotHeld(PLUGIN_CONFIG.wantedItems, InventoryPlan.heldItemNames(bot.playerStacks()));
+    }
+
+    /** Blocks the pathfinder bridges with can't be picked up any more, so one stack gets held back. */
+    Set<String> bridgingItems() {
+        return CONFIG.client.extra.pathfinder.allowPlace
+            ? CONFIG.client.extra.pathfinder.acceptableThrowawayItems
+            : Set.of();
+    }
+
+    private List<Integer> junkSlots() {
+        return InventoryPlan.slotsToThrowAway(
+            bot.playerStacks(), targetItems(), PLUGIN_CONFIG.keepItems, bridgingItems(), PLUGIN_CONFIG.stillToStore);
+    }
+
+    /** Items taken off the list stop being protected from the junk rules once the bot has none left. */
+    void forgetItemsNoLongerCarried() {
+        Set<String> held = InventoryPlan.heldItemNames(bot.playerStacks());
+        PLUGIN_CONFIG.stillToStore.removeIf(item -> !held.contains(item));
+    }
+
+    boolean hasJunk() {
+        return !junkSlots().isEmpty();
+    }
+
+    /**
+     * Thrown junk can be picked straight back up by a bot with empty slots. So it's only thrown away
+     * once every slot it leaves behind can be filled, or when it's crowding out what the bot is after,
+     * which stops it collecting anything, and the bot moves on from what it threw away.
+     */
+    boolean isWorthThrowingJunk() {
+        int junk = junkSlots().size();
+        if (junk == 0) return false;
+        int free = bot.freeSlots();
+        List<SlotStack> stacks = bot.playerStacks();
+        if (InventoryPlan.needsStoring(stacks, free, targetItems(), PLUGIN_CONFIG.stacksOfRoomToKeep, true)) return true;
+        if (!PLUGIN_CONFIG.fillEmptySlots) return false;
+
+        int open = slotsToLeaveOpen();
+        int toFill = Math.max(0, free + junk - open);
+        return InventoryPlan.fillableSlots(stacks, free + junk, targetItems(), open) == toFill;
+    }
+
+    /** Throws away all the known junk. Call this right before filling slots, so it can't come back. */
+    void throwAwayJunk() {
+        bot.closeContainer();
+        for (int slot : junkSlots()) {
+            ItemStack stack = bot.stackAt(slot);
+            if (bot.dropStack(slot)) {
+                module.info("Threw away {} {}", stack.getAmount(), nameOf(stack));
+            } else {
+                module.warn("Couldn't throw away the {} in slot {}", nameOf(stack), slot);
+            }
+        }
     }
 
     boolean isWorthFilling() {
@@ -93,8 +148,9 @@ final class InventorySpace {
 
     /**
      * Right-clicking a stack picks up half of it and right-clicking an empty slot puts down one, so the
-     * stack being taken from is never left empty for a passing item to land in. Returns how many
-     * slots it filled.
+     * stack being taken from is never left empty for a passing item to land in. Each click waits for
+     * the server to confirm it, because Zenith doesn't predict putting one down, and on a laggy
+     * connection a click based on an out-of-date cursor gets refused. Returns how many slots it filled.
      */
     private int spread(int itemId, int wanted, Deque<Integer> emptySlots) {
         int filled = 0;
@@ -104,19 +160,29 @@ final class InventorySpace {
 
             int pickedUp = (source.stack().getAmount() + 1) / 2;
             int toPlace = Math.min(pickedUp, Math.min(wanted - filled, emptySlots.size()));
-            bot.click(source.slot(), ClickItemAction.RIGHT_CLICK);
+            clickAndConfirm(source.slot(), ClickItemAction.RIGHT_CLICK, () -> bot.cursorAmount() == pickedUp);
+            int onCursor = pickedUp;
             int placed = 0;
             while (placed < toPlace && !emptySlots.isEmpty()) {
                 int slot = emptySlots.poll();
                 if (!bot.isEmptySlot(slot)) continue;
-                bot.click(slot, ClickItemAction.RIGHT_CLICK);
+                int left = onCursor - 1;
+                clickAndConfirm(slot, ClickItemAction.RIGHT_CLICK, () -> !bot.isEmptySlot(slot) && bot.cursorAmount() == left);
+                onCursor = left;
                 placed++;
             }
-            if (placed < pickedUp) bot.click(source.slot(), ClickItemAction.LEFT_CLICK);
+            if (onCursor > 0) clickAndConfirm(source.slot(), ClickItemAction.LEFT_CLICK, bot::cursorIsEmpty);
             filled += placed;
             if (placed == 0) break;
         }
         return filled;
+    }
+
+    private void clickAndConfirm(int slot, ClickItemAction action, BooleanSupplier confirmed) {
+        bot.click(slot, action);
+        if (!bot.waitFor(confirmed, Bot.ACTION_TIMEOUT_MS)) {
+            throw ErrandFailed.retry("A click on slot " + slot + " while filling the inventory didn't go through");
+        }
     }
 
     private SlotStack largestStackOf(int itemId) {

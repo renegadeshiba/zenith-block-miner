@@ -26,7 +26,7 @@ import static com.zenith.Globals.saveConfigAsync;
 import static com.zenithplugins.blockminer.BlockMinerPlugin.PLUGIN_CONFIG;
 
 /**
- * Keeps the pathfinder mining the chosen blocks, and sends the bot on an errand when the inventory
+ * Keeps the pathfinder mining for the chosen items, and sends the bot on an errand when the inventory
  * fills up or the tool in hand is nearly broken. Errands run on their own thread (see {@link Bot}),
  * while this module only watches and decides from the client tick.
  */
@@ -41,6 +41,7 @@ public class BlockMinerModule extends Module {
     // While the bot is still building up target items, how often it stops to fill more slots with them.
     private static final int FILL_SLOTS_INTERVAL_TICKS = 20 * 30;
     private static final int TOOL_CHECK_INTERVAL_TICKS = 20;
+    private static final int STARTUP_WAIT_TICKS = 20 * 5;
 
     private final Bot bot = new Bot(this);
     private final InventorySpace space = new InventorySpace(this, bot);
@@ -63,6 +64,7 @@ public class BlockMinerModule extends Module {
     private volatile long nextMineTick;
     private volatile boolean reportedNothingFound;
     private boolean reportedBreakingOff;
+    private boolean reportedNothingChosen;
 
     @Override
     public List<EventConsumer<?>> registerEvents() {
@@ -105,7 +107,9 @@ public class BlockMinerModule extends Module {
 
     private void handleStarting(ClientBotTick.Starting event) {
         mining = null;
-        nextMineTick = 0;
+        // The world and inventory are still arriving, so what the bot sees isn't to be trusted yet.
+        nextMineTick = tick + STARTUP_WAIT_TICKS;
+        nextErrandTick = tick + STARTUP_WAIT_TICKS;
     }
 
     private void handleStopped(ClientBotTick.Stopped event) {
@@ -163,9 +167,19 @@ public class BlockMinerModule extends Module {
             .filter(Objects::nonNull)
             .toArray(Block[]::new);
         if (blocks.length == 0) {
-            status = "Waiting: nothing chosen to mine";
+            status = "Waiting: nothing chosen to mine. Choose something with `blockminer add <item>`";
+            if (!reportedNothingChosen) {
+                warn("Nothing is chosen to mine, so the bot is waiting. Choose something with `blockminer add <item>`");
+                discordAndIngameNotification(Embed.builder()
+                    .title("Block Miner Has Nothing To Mine")
+                    .description("It's on, but no items are chosen, so it's leaving the inventory alone and waiting."
+                        + "\nChoose something with `blockminer add <item>`.")
+                    .errorColor());
+            }
+            reportedNothingChosen = true;
             return;
         }
+        reportedNothingChosen = false;
 
         if (TargetItems.combinedToolNeed(PLUGIN_CONFIG.wantedItems) == null) {
             status = "Waiting: the chosen items need different tools, so remove one with `blockminer remove`";
@@ -206,11 +220,14 @@ public class BlockMinerModule extends Module {
     // ----------------------------------------------------------------------------------------
 
     private boolean needsErrand() {
+        // With nothing chosen, the only thing to do is not leave a shulker box lying around.
+        if (PLUGIN_CONFIG.wantedItems.isEmpty()) return bot.placedShulkerIsInThisWorld();
+
         return ToolRules.isWorn(bot.heldStack(), PLUGIN_CONFIG.toolDurabilityThreshold)
             || storage.isNeeded()
             || bot.placedShulkerIsInThisWorld()
             || wrongToolOnHotbar()
-            || (tick >= nextFillTick && space.isWorthFilling());
+            || (tick >= nextFillTick && (space.isWorthFilling() || space.isWorthThrowingJunk()));
     }
 
     /** What the tool has to be like for the chosen items. Conflicting items don't get mined at all. */
@@ -246,21 +263,25 @@ public class BlockMinerModule extends Module {
             collectPlacedShulker();
             storage.returnCarriedShulkers();
 
-            if (ToolRules.isWorn(bot.heldStack(), PLUGIN_CONFIG.toolDurabilityThreshold)) {
-                status = "Swapping a worn tool";
-                toolSwap.run(bot.heldStack(), toolNeed());
+            if (!PLUGIN_CONFIG.wantedItems.isEmpty()) {
+                if (ToolRules.isWorn(bot.heldStack(), PLUGIN_CONFIG.toolDurabilityThreshold)) {
+                    status = "Swapping a worn tool";
+                    toolSwap.run(bot.heldStack(), toolNeed());
+                }
+                if (CONFIG.client.extra.pathfinder.autoTool) {
+                    status = "Getting the right tool";
+                    toolSwap.ensureRightTool(ToolChoice.blocksNeedingARightTool(PLUGIN_CONFIG.wantedItems), toolNeed());
+                    wrongTool = false;
+                }
+                if (storage.isNeeded()) {
+                    status = "Storing items";
+                    storage.run();
+                }
+                space.forgetItemsNoLongerCarried();
+                status = "Filling inventory slots";
+                if (space.isWorthThrowingJunk()) space.throwAwayJunk();
+                space.fillEmptySlots();
             }
-            if (CONFIG.client.extra.pathfinder.autoTool) {
-                status = "Getting the right tool";
-                toolSwap.ensureRightTool(ToolChoice.blocksNeedingARightTool(PLUGIN_CONFIG.wantedItems), toolNeed());
-                wrongTool = false;
-            }
-            if (storage.isNeeded()) {
-                status = "Storing items";
-                storage.run();
-            }
-            status = "Filling inventory slots";
-            space.fillEmptySlots();
 
             bot.walkBackTo(start);
             failedErrands = 0;

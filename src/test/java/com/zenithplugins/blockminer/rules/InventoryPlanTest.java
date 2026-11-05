@@ -43,7 +43,11 @@ class InventoryPlanTest {
     }
 
     private static List<Integer> toStore(List<SlotStack> inventory, Set<String> targets, boolean crafting) {
-        return InventoryPlan.slotsToStore(inventory, targets, KEEP, BRIDGING, crafting);
+        return InventoryPlan.slotsToStore(inventory, targets, KEEP, BRIDGING, crafting, List.of());
+    }
+
+    private static List<Integer> toThrow(List<SlotStack> inventory, Set<String> targets) {
+        return InventoryPlan.slotsToThrowAway(inventory, targets, KEEP, BRIDGING, List.of());
     }
 
     // ------------------------------------------------------------------------------------------
@@ -51,12 +55,83 @@ class InventoryPlanTest {
     // ------------------------------------------------------------------------------------------
 
     @Test
-    void junkGetsStoredAndGearDoesNot() {
+    void whatIsntKnownToBeJunkGetsStoredAndGearDoesNot() {
         List<SlotStack> inventory = all(
-            stacks(0, ItemRegistry.ANDESITE, 64),
+            stacks(0, ItemRegistry.BONE, 64),
             all(stacks(1, ItemRegistry.NETHERITE_PICKAXE, 1), stacks(2, ItemRegistry.ENDER_CHEST, 3))
         );
         assertEquals(List.of(0), toStore(inventory, DIAMONDS, true));
+    }
+
+    @Test
+    void knownJunkIsNotStoredBecauseItGetsThrownAway() {
+        List<SlotStack> inventory = all(stacks(0, ItemRegistry.ANDESITE, 64), stacks(1, ItemRegistry.TUFF, 12));
+        assertTrue(toStore(inventory, DIAMONDS, true).isEmpty());
+        assertEquals(List.of(0, 1), toThrow(inventory, DIAMONDS));
+    }
+
+    @Test
+    void onlyKnownJunkIsThrownAway() {
+        List<SlotStack> inventory = all(
+            stacks(0, ItemRegistry.TUFF, 12),
+            all(stacks(1, ItemRegistry.BONE, 64), stacks(2, ItemRegistry.EMERALD, 3))
+        );
+        assertEquals(List.of(0), toThrow(inventory, DIAMONDS));
+    }
+
+    @Test
+    void gearAndTheKeepListAreNeverThrownAway() {
+        List<SlotStack> inventory = all(
+            stacks(0, ItemRegistry.NETHERITE_PICKAXE, 1),
+            all(stacks(1, ItemRegistry.ENDER_CHEST, 3), stacks(2, ItemRegistry.TUFF, 12))
+        );
+        assertEquals(List.of(2), toThrow(inventory, DIAMONDS));
+        assertTrue(InventoryPlan.slotsToThrowAway(inventory, DIAMONDS, List.of("ender_chest", "tuff"), Set.of(), List.of()).isEmpty());
+    }
+
+    @Test
+    void whatYouAskedForIsNeverJunkEvenIfItUsuallyIs() {
+        List<SlotStack> inventory = stacks(0, ItemRegistry.COBBLED_DEEPSLATE, 64, 64, 1);
+        Set<String> wanted = Set.of("cobbled_deepslate");
+        assertTrue(toThrow(inventory, wanted).isEmpty());
+        assertEquals(2, toStore(inventory, wanted, false).size(), "all but the largest stack gets stored");
+    }
+
+    @Test
+    void nothingIsThrownAwayWithNothingChosen() {
+        assertTrue(toThrow(stacks(0, ItemRegistry.TUFF, 64, 64), Set.of()).isEmpty());
+    }
+
+    @Test
+    void oneStackForBridgingIsKeptAndTheRestThrownAway() {
+        List<SlotStack> inventory = all(stacks(0, ItemRegistry.NETHERRACK, 20, 64), stacks(2, ItemRegistry.COBBLESTONE, 10));
+        assertEquals(List.of(0, 2), toThrow(inventory, DIAMONDS));
+        assertTrue(toStore(inventory, DIAMONDS, false).isEmpty());
+    }
+
+    /** Switching from cobbled deepslate to diamonds mustn't throw away everything mined so far. */
+    @Test
+    void anItemTakenOffTheListIsStoredRatherThanThrownAway() {
+        List<SlotStack> inventory = stacks(0, ItemRegistry.COBBLED_DEEPSLATE, 64, 64, 64);
+        List<String> spared = List.of("cobbled_deepslate");
+
+        assertTrue(InventoryPlan.slotsToThrowAway(inventory, DIAMONDS, KEEP, BRIDGING, spared).isEmpty());
+        assertEquals(List.of(0, 1, 2), InventoryPlan.slotsToStore(inventory, DIAMONDS, KEEP, BRIDGING, false, spared));
+    }
+
+    @Test
+    void itemsNotSparedAreStillThrownAwayAlongsideOnesThatAre() {
+        List<SlotStack> inventory = all(stacks(0, ItemRegistry.COBBLED_DEEPSLATE, 64), stacks(1, ItemRegistry.TUFF, 12));
+        List<String> spared = List.of("cobbled_deepslate");
+
+        assertEquals(List.of(1), InventoryPlan.slotsToThrowAway(inventory, DIAMONDS, KEEP, BRIDGING, spared));
+        assertEquals(List.of(0), InventoryPlan.slotsToStore(inventory, DIAMONDS, KEEP, BRIDGING, false, spared));
+    }
+
+    @Test
+    void junkThatIsntForBridgingIsThrownAwayToo() {
+        List<SlotStack> inventory = all(stacks(0, ItemRegistry.NETHERRACK, 20), stacks(1, ItemRegistry.TUFF, 64));
+        assertEquals(List.of(1), toThrow(inventory, DIAMONDS));
     }
 
     @Test
@@ -88,12 +163,20 @@ class InventoryPlanTest {
     }
 
     @Test
-    void aSingleStackOfABridgingBlockStays() {
-        List<SlotStack> inventory = all(stacks(0, ItemRegistry.NETHERRACK, 20, 64), stacks(2, ItemRegistry.COBBLESTONE, 10));
-        List<Integer> stored = toStore(inventory, DIAMONDS, false);
+    void extraStacksOfABridgingBlockThatIsntJunkGetStored() {
+        Set<String> bridging = Set.of("obsidian");
+        List<SlotStack> inventory = stacks(0, ItemRegistry.OBSIDIAN, 20, 64);
+        assertEquals(List.of(0), InventoryPlan.slotsToStore(inventory, DIAMONDS, KEEP, bridging, false, List.of()));
+        assertTrue(InventoryPlan.slotsToThrowAway(inventory, DIAMONDS, KEEP, bridging, List.of()).isEmpty());
+    }
 
-        assertEquals(2, stored.size());
-        assertFalse(stored.contains(1));
+    /** Otherwise everything counts as junk, and a bot that's been given nothing to do empties itself. */
+    @Test
+    void nothingIsStoredWithNothingChosen() {
+        List<SlotStack> full = stacks(0, ItemRegistry.COBBLED_DEEPSLATE, repeated(36, 64));
+        assertTrue(toStore(full, Set.of(), true).isEmpty());
+        assertFalse(InventoryPlan.needsStoring(full, 0, Set.of(), ROOM, true));
+        assertFalse(InventoryPlan.hasNoRoom(full, 0, Set.of(), false));
     }
 
     // ------------------------------------------------------------------------------------------

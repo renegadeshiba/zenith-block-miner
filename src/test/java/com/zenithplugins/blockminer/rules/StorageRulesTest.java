@@ -13,9 +13,30 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StorageRulesTest {
+
+    @Test
+    void everyKnownJunkNameIsARealItem() {
+        for (String name : List.of(
+            "cobblestone", "stone", "cobbled_deepslate", "deepslate", "tuff", "andesite", "diorite", "granite",
+            "calcite", "dripstone_block", "pointed_dripstone", "gravel", "flint", "dirt", "coarse_dirt", "sand",
+            "red_sand", "sandstone", "red_sandstone", "netherrack", "blackstone", "basalt", "smooth_basalt",
+            "soul_sand", "soul_soil", "magma_block", "end_stone"
+        )) {
+            assertNotNull(ItemRegistry.REGISTRY.get(name), name);
+            assertTrue(StorageRules.isKnownJunk(name), name + " is missing from the list");
+        }
+    }
+
+    @Test
+    void valuableThingsAreNotJunk() {
+        for (String name : List.of("diamond", "ancient_debris", "obsidian", "emerald", "netherite_scrap", "elytra", "firework_rocket")) {
+            assertFalse(StorageRules.isKnownJunk(name), name);
+        }
+    }
 
     private static final List<String> KEEP = List.of("ender_chest", "crafting_table");
 

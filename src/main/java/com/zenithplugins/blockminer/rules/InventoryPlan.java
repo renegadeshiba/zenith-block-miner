@@ -39,6 +39,14 @@ public final class InventoryPlan {
         return entry.stack().getAmount();
     }
 
+    private static boolean isJunk(String name, Collection<String> spared) {
+        return StorageRules.isKnownJunk(name) && !spared.contains(name);
+    }
+
+    private static String nameOf(SlotStack entry) {
+        return ItemRegistry.REGISTRY.get(entry.stack().getId()).name();
+    }
+
     private static SlotStack largest(List<SlotStack> stacks) {
         return stacks.stream().max(Comparator.comparingInt(InventoryPlan::amountOf)).orElseThrow();
     }
@@ -47,14 +55,19 @@ public final class InventoryPlan {
      * The slots to put in a shulker box. A stack of each target item stays behind to fill slots with.
      * So does one stack of a block the pathfinder can bridge with, since it can't pick up any more.
      * With crafting on, up to 8 extra of a material stay too, as they aren't enough to craft with yet.
+     * Known junk doesn't get stored, as it's thrown away instead, unless it's one of {@code spared}. With
+     * no target items chosen, nothing gets stored: there's no telling what's wanted.
      */
     public static List<Integer> slotsToStore(
         List<SlotStack> inventory,
         Set<String> targetItems,
         Collection<String> keepItems,
         Collection<String> bridgingItems,
-        boolean crafting
+        boolean crafting,
+        Collection<String> spared
     ) {
+        if (targetItems.isEmpty()) return List.of();
+
         Map<Integer, List<SlotStack>> targetsByItem = new HashMap<>();
         List<SlotStack> bridging = new ArrayList<>();
         List<Integer> toStore = new ArrayList<>();
@@ -65,7 +78,7 @@ public final class InventoryPlan {
                 targetsByItem.computeIfAbsent(entry.stack().getId(), id -> new ArrayList<>()).add(entry);
             } else if (bridgingItems.contains(name)) {
                 bridging.add(entry);
-            } else {
+            } else if (!isJunk(name, spared)) {
                 toStore.add(entry.slot());
             }
         }
@@ -76,8 +89,41 @@ public final class InventoryPlan {
             int spareMaterial = crafting && CompactRecipes.isInput(item.name()) ? CompactRecipes.INPUT_COUNT - 1 : 0;
             if (total > item.stackSize() + spareMaterial) addAllButLargest(stacks, toStore);
         });
-        if (!bridging.isEmpty()) addAllButLargest(bridging, toStore);
+        if (!bridging.isEmpty()) {
+            SlotStack kept = largest(bridging);
+            for (SlotStack entry : bridging) {
+                if (entry != kept && !isJunk(nameOf(entry), spared)) toStore.add(entry.slot());
+            }
+        }
         return toStore;
+    }
+
+    /**
+     * The slots holding known junk, to throw away. An item the user asked for or put on the keep list
+     * is never junk, and neither is the stack held back for the pathfinder to bridge with, or anything
+     * in {@code spared}. With no target items chosen, nothing gets thrown away, since throwing something
+     * away can't be undone.
+     */
+    public static List<Integer> slotsToThrowAway(
+        List<SlotStack> inventory,
+        Set<String> targetItems,
+        Collection<String> keepItems,
+        Collection<String> bridgingItems,
+        Collection<String> spared
+    ) {
+        if (targetItems.isEmpty()) return List.of();
+
+        List<SlotStack> junk = new ArrayList<>();
+        List<SlotStack> bridging = new ArrayList<>();
+        for (SlotStack entry : inventory) {
+            if (!StorageRules.isStorable(entry.stack(), keepItems)) continue;
+            String name = nameOf(entry);
+            if (targetItems.contains(name)) continue;
+            if (bridgingItems.contains(name)) bridging.add(entry);
+            if (isJunk(name, spared)) junk.add(entry);
+        }
+        if (!bridging.isEmpty()) junk.remove(largest(bridging));
+        return junk.stream().map(SlotStack::slot).toList();
     }
 
     private static void addAllButLargest(List<SlotStack> stacks, List<Integer> toStore) {
@@ -99,7 +145,7 @@ public final class InventoryPlan {
         int stacksOfRoom,
         boolean anythingToStore
     ) {
-        if (!anythingToStore) return false;
+        if (!anythingToStore || targetItems.isEmpty()) return false;
 
         Map<Integer, Integer> totalByItem = new HashMap<>();
         Map<Integer, Integer> roomByItem = new HashMap<>();
@@ -130,7 +176,7 @@ public final class InventoryPlan {
         boolean anythingToStore
     ) {
         // An empty list with no empty slots just means the inventory hasn't loaded yet.
-        if (anythingToStore || emptySlots > 0 || inventory.isEmpty()) return false;
+        if (anythingToStore || emptySlots > 0 || inventory.isEmpty() || targetItems.isEmpty()) return false;
         for (SlotStack entry : inventory) {
             if (!isTarget(entry, targetItems)) continue;
             if (amountOf(entry) < ItemRegistry.REGISTRY.get(entry.stack().getId()).stackSize()) return false;

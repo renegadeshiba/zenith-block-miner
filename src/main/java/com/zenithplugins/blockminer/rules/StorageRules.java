@@ -10,11 +10,28 @@ import org.jspecify.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 
 /** What counts as a shulker box, what's inside one, and what can be stored at all. */
 public final class StorageRules {
 
+    /**
+     * What mining turns up that nobody wants, which gets thrown away rather than stored. Anything not
+     * on this list gets stored, since there's no telling whether it matters. An item the user asked
+     * for, or put on the keep list, is never treated as junk.
+     */
+    private static final Set<String> KNOWN_JUNK = Set.of(
+        "cobblestone", "stone", "cobbled_deepslate", "deepslate", "tuff", "andesite", "diorite", "granite",
+        "calcite", "dripstone_block", "pointed_dripstone", "gravel", "flint", "dirt", "coarse_dirt", "sand",
+        "red_sand", "sandstone", "red_sandstone", "netherrack", "blackstone", "basalt", "smooth_basalt",
+        "soul_sand", "soul_soil", "magma_block", "end_stone"
+    );
+
     private StorageRules() {
+    }
+
+    public static boolean isKnownJunk(String itemName) {
+        return KNOWN_JUNK.contains(itemName);
     }
 
     public static boolean isShulkerName(String itemName) {

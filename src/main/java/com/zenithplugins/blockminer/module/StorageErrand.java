@@ -8,9 +8,7 @@ import com.zenithplugins.blockminer.rules.TargetItems;
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 
 import java.util.List;
-import java.util.Set;
 
-import static com.zenith.Globals.CONFIG;
 import static com.zenithplugins.blockminer.BlockMinerPlugin.PLUGIN_CONFIG;
 
 /**
@@ -37,16 +35,13 @@ final class StorageErrand {
     }
 
     private List<Integer> slotsToStore() {
-        // Blocks the pathfinder bridges with can't be picked up any more, so one stack gets held back.
-        Set<String> bridgingItems = CONFIG.client.extra.pathfinder.allowPlace
-            ? CONFIG.client.extra.pathfinder.acceptableThrowawayItems
-            : Set.of();
         return InventoryPlan.slotsToStore(
             bot.playerStacks(),
             TargetItems.itemsFor(PLUGIN_CONFIG.wantedItems),
             PLUGIN_CONFIG.keepItems,
-            bridgingItems,
-            PLUGIN_CONFIG.craftIntoBlocks
+            space.bridgingItems(),
+            PLUGIN_CONFIG.craftIntoBlocks,
+            PLUGIN_CONFIG.stillToStore
         );
     }
 
@@ -66,15 +61,15 @@ final class StorageErrand {
             bot.playerStacks(),
             bot.freeSlots(),
             TargetItems.itemsFor(PLUGIN_CONFIG.wantedItems),
-            !slotsToStore().isEmpty()
+            !slotsToStore().isEmpty() || space.hasJunk()
         );
     }
 
+    /** Filling the slots again is left to the caller, along with throwing away any junk first. */
     void run() {
         space.ensureFreeSlot();
         craftIfEnabled();
         store();
-        space.fillEmptySlots();
     }
 
     /** The inventory still needs emptying if crafting doesn't work out, so that doesn't end the errand. */

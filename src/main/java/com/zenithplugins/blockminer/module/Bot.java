@@ -99,11 +99,18 @@ final class Bot {
     };
 
     private final BlockMinerModule module;
+    /** False once the bot goes offline or a player takes over, which ends any errand under way. */
+    private final BooleanSupplier inControl;
     /** Chest position -> time it may be tried again. Only touched from the errand thread. */
     private final Map<String, Long> failedChests = new HashMap<>();
 
     Bot(BlockMinerModule module) {
+        this(module, () -> Proxy.getInstance().isConnected() && !Proxy.getInstance().hasActivePlayer());
+    }
+
+    Bot(BlockMinerModule module, BooleanSupplier inControl) {
         this.module = module;
+        this.inControl = inControl;
     }
 
     // ----------------------------------------------------------------------------------------
@@ -111,9 +118,7 @@ final class Bot {
     // ----------------------------------------------------------------------------------------
 
     private void checkAlive() {
-        if (!Proxy.getInstance().isConnected() || Proxy.getInstance().hasActivePlayer()) {
-            throw new ErrandAborted();
-        }
+        if (!inControl.getAsBoolean()) throw new ErrandAborted();
     }
 
     void sleep(int ms) {
@@ -264,6 +269,11 @@ final class Bot {
 
     boolean cursorIsEmpty() {
         return isEmpty(inventory().getMouseStack());
+    }
+
+    int cursorAmount() {
+        ItemStack cursor = inventory().getMouseStack();
+        return isEmpty(cursor) ? 0 : cursor.getAmount();
     }
 
     // ----------------------------------------------------------------------------------------

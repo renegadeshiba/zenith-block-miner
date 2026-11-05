@@ -72,7 +72,8 @@ Ask for the item you want to end up with. That decides which blocks get mined an
 - **Anything else** that's a block is mined as that block with any tool, such as `obsidian` or `oak_log`.
   Something that isn't a block and isn't listed here can't be added.
 
-`blockminer add` tells you what it will mine and with what, and `blockminer` shows it too.
+`blockminer add` tells you what it will mine and with what, and `blockminer` shows it too. If it's on with
+nothing chosen, it leaves the inventory alone, sends you a notification and waits.
 
 **Getting the right tool:** the pathfinder picks whichever tool on the hotbar breaks a block fastest, and
 it only looks at the hotbar. So before mining, the bot moves any wrong tool off the hotbar and the right
@@ -121,21 +122,46 @@ up is more of what it's mining, and netherrack, stone and the like stay on the g
 The target items are exactly the items you asked for, so when you ask for `diamond`, the cobbled deepslate
 from mining down to it stays on the ground.
 
-**Until it has enough to fill the slots**, it can still pick up junk, which gets stored like anything
-else. Every 30 seconds it fills as many slots as it can with what it has, so this eases off as it goes.
-Giving it a stack before it starts avoids this.
+**Until it has enough to fill the slots**, it can still pick up junk. Every 30 seconds it fills as many
+slots as it can with what it has, so this eases off as it goes. Giving it a stack before it starts avoids
+this.
 
 **Mining several different items:** the slots are shared between them. An item it has none of yet needs
-an empty slot to get in, so one is left open for it, and junk can use that slot too until the next time
-it stores things.
+an empty slot to get in, so one is left open for it, and junk can use that slot too until it's next
+thrown away.
 
-Turn this off with `blockminer fill off`.
+Turn filling off with `blockminer fill off`.
+
+### Throwing junk away
+
+Junk that does get in is thrown on the ground, not stored, so it doesn't take up space in your shulker
+boxes. Dropped items disappear after about 5 minutes. This is what counts as junk:
+
+`cobblestone`, `stone`, `cobbled_deepslate`, `deepslate`, `tuff`, `andesite`, `diorite`, `granite`, `calcite`,
+`dripstone_block`, `pointed_dripstone`, `gravel`, `flint`, `dirt`, `coarse_dirt`, `sand`, `red_sand`,
+`sandstone`, `red_sandstone`, `netherrack`, `blackstone`, `basalt`, `smooth_basalt`, `soul_sand`, `soul_soil`,
+`magma_block`, `end_stone`
+
+It never throws away anything else, so an item not on that list gets stored instead. It also won't throw
+away:
+
+- an item you've asked for, so `blockminer add cobblestone` means cobblestone isn't junk any more
+- anything on the keep list, so use `blockminer keep add <item>` to hold on to one of them
+- the one stack it holds back for the pathfinder to bridge with
+- an item you've just removed from your list, while it's still carrying some, so switching from
+  `cobbled_deepslate` to `diamond` stores what it's mined instead of throwing it away
+- anything at all if no items are chosen
+
+A thrown item can be picked straight back up by a bot with empty slots. So it waits until it can fill every
+slot the junk leaves behind, and refills them straight away. The exception is when junk fills the inventory
+before it has enough to do that: it throws it away anyway so it can pick up what it's after, and some may
+come back if the bot stays close to where it fell.
 
 ### When to store
 
 Free slots can't be the signal any more, so the bot stores when there's only room left for 2 more stacks
-of its target item, across all of its stacks. Change that with `blockminer room <stacks>`. It also stores
-if junk has filled the inventory before the slots could be filled. When it's time, the bot:
+of its target item, across all of its stacks. Change that with `blockminer room <stacks>`. When it's
+time, the bot:
 
 1. Merges two partly full stacks to free up a slot, then crafts items into blocks, if crafting is on.
 2. Takes an empty shulker box from the ender chest.
@@ -238,7 +264,7 @@ the ground.
   pathfinder only goes back for drops named after a block it's mining, so it goes back for cobbled
   deepslate but not for diamonds. Normally that's not an issue, because it walks into each block it mines.
 - Junk it leaves on the ground can land in a slot the moment one frees up, such as while it's storing
-  things. That's harmless: it just gets stored on the next trip.
+  things. That's harmless: it just gets thrown away again later.
 - A placed ender chest stays where the bot put it, so it can get broken if it ends up in the way of
   mining, which only drops obsidian without Silk Touch.
 
