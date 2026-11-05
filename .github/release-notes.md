@@ -1,35 +1,25 @@
 ## What's fixed
 
-**With nothing chosen, the bot emptied its inventory and then stood still.** 1.1.0 dropped the old block list when it was installed, and with no items chosen, the bot treated everything it was carrying as junk. It stored it all as soon as it connected, kept nothing to fill its slots with, and then had nothing to mine. Now, with nothing chosen, it leaves the inventory alone, sends you a notification, and waits for `blockminer add <item>`.
+**The proxy could run out of memory while mining.** You'd see `OutOfMemoryError: Java heap space` from `MineProcess` in the pathfinder, repeating every few seconds, with the bot not mining. It happened when mining a block that's everywhere, such as deepslate, stone or netherrack, with the bot more than 10 blocks above or below any of it. ZenithProxy's search then collects every one in the loaded chunks, which can be millions. Since 1.1.0, asking for `cobbled_deepslate` has meant mining `deepslate`, which made this easy to hit.
 
-**Spreading items through the inventory failed on a laggy connection.** The bot clicked faster than the server could reply, so a click could be refused, the errand would fail, and after three failures the bot would stop itself. Each click now waits for the server to confirm it. On a slow connection this takes a little longer, so filling all the slots can take several seconds.
+The bot now checks first. While that search would be too big, it walks to the nearest blocks itself, mining them on the way, and the status shows `Walking to the nearest ...`. Once it's among them, it hands back to ZenithProxy's miner.
 
-**It no longer starts errands the moment it connects.** It waits 5 seconds for the world and inventory to arrive first. That's what caused `No room to place ender_chest beside the bot` straight after connecting.
+## Worth knowing
 
-## What's changed
+**The bot digs from where it stands.** If it's above the layer it's after, it digs its way down, so don't start it anywhere it shouldn't dig, such as a base or stash.
 
-**Junk gets thrown away instead of stored.** It was taking up space in your shulker boxes and causing extra trips to the ender chest. Only a fixed list of known junk gets thrown, such as `tuff`, `gravel`, `dirt`, `andesite`, `netherrack` and `cobblestone`. The [README](https://github.com/renegadeshiba/zenith-block-miner#throwing-junk-away) has the full list. Anything else still gets stored, so nothing valuable can be thrown away by mistake.
-
-It never throws away an item you've asked for, anything on the keep list, or anything at all if no items are chosen. An item you've just removed from your list gets stored instead, while the bot is still carrying some, so switching from `cobbled_deepslate` to `diamond` doesn't throw away what it mined. To hold on to something on the junk list, use `blockminer keep add <item>`. Thrown items are gone after about 5 minutes.
-
-## You need to do this
-
-If you installed 1.1.0, choose your items again:
-
-```
-blockminer add cobbled_deepslate
-```
-
-Anything stored by mistake is in a shulker box in the ender chest, so nothing was lost. Giving the bot a stack of what it's after keeps junk out from the start.
+**It goes looking for blocks by itself.** The README used to say it doesn't, which was wrong. If none of your blocks are loaded, ZenithProxy's miner digs down to Y -59 and tunnels away from where it started. This isn't new, and there's no setting to stop it.
 
 ## How this was tested
 
-The new tests run the bot's real slot filling and ZenithProxy's real click handling against a pretend server that follows vanilla's rules, with and without lag.
+On a 300 MB heap, ZenithProxy's default for the `java` release channel, with 441 chunks loaded, ZenithProxy's real search runs out of memory at the same line as the reported error, and the new code doesn't. The new count of what that search would collect matched the real search everywhere it was tested, and ZenithProxy's real path search found a way from the surface down to the deepslate in a test world.
 
-**It hasn't been run on a live server yet.** Please watch the first time it stores items: it should keep one stack and spread it through the empty slots.
+**It hasn't been run on a live server yet.** In the tests the bot never actually moves, so please watch the walk down and the hand-over the first time.
+
+A small risk remains. The check runs every half second and ZenithProxy searches every 2.5 seconds, so if the bot leaves the layer between checks, one oversized search could still start before it switches.
 
 ## Install
 
 ```
-plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.1/BlockMiner-1.1.1.jar
+plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.2/BlockMiner-1.1.2.jar
 ```
