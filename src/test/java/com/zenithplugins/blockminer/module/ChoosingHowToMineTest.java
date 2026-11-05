@@ -138,6 +138,30 @@ class ChoosingHowToMineTest {
         return (BlockScan.MiningArea) field.get(module);
     }
 
+    private void assertSectionCentredOn(int x, int z) throws ReflectiveOperationException {
+        assertEquals(x, miningArea().centreX());
+        assertEquals(z, miningArea().centreZ());
+    }
+
+    private List<BlockPos> blocksItsGoingFor() throws ReflectiveOperationException {
+        Field field = BlockMinerModule.class.getDeclaredField("currentGoal");
+        field.setAccessible(true);
+        return ((BlockScan.MiningGoal) field.get(module)).blocks();
+    }
+
+    private static boolean miningABlock() {
+        return BARITONE.getInteractWithProcess().isActive();
+    }
+
+    private void waitForMiningABlock() throws InterruptedException {
+        tickUntil(ChoosingHowToMineTest::miningABlock, "mining a block");
+    }
+
+    /** The bot on the level that reaches the top layer, which is at -1, from its floor. */
+    private void putBotOnTheTopLevel() {
+        TestWorld.putBotAt(8.5, -7, 8.5);
+    }
+
     private void askForRoom() throws ReflectiveOperationException {
         Field roomNeeded = BlockMinerModule.class.getDeclaredField("roomNeeded");
         roomNeeded.setAccessible(true);
@@ -159,15 +183,84 @@ class ChoosingHowToMineTest {
     }
 
     @Test
-    void minesOnItsOwnLevelFromAmongTheBlocks() throws InterruptedException {
+    void goesToTheTopOfTheSectionFromAmongTheBlocks() throws InterruptedException {
         want("cobbled_deepslate");
         TestWorld.putBotAt(8.5, -30, 8.5);
 
         waitForPath();
 
+        assertEquals(WALKING, module.status());
+        assertTrue(currentGoal().isInGoal(8, -7, 8));
+        assertFalse(currentGoal().isInGoal(8, -30, 8));
+    }
+
+    @Test
+    void minesWhatsAboveItOnceItsThereWithoutWalking() throws Exception {
+        want("cobbled_deepslate");
+        putBotOnTheTopLevel();
+
+        waitForMiningABlock();
+
         assertEquals("Mining", module.status());
-        assertTrue(currentGoal().isInGoal(9, -30, 8));
-        assertFalse(currentGoal().isInGoal(8, -31, 8), "not under its feet");
+        assertFalse(followingAPath());
+        assertEquals(List.of(new BlockPos(8, -5, 8)), blocksItsGoingFor());
+    }
+
+    @Test
+    void walksToTheNextSpotOnceTheresNothingLeftAboveIt() throws Exception {
+        want("cobbled_deepslate");
+        putBotOnTheTopLevel();
+
+        for (int y = -5; y <= -1; y++) {
+            waitForMiningABlock();
+            assertEquals(List.of(new BlockPos(8, y, 8)), blocksItsGoingFor());
+            world.set(8, y, 8, BlockRegistry.AIR);
+            pathEnds(true);
+        }
+
+        waitForPath();
+        assertEquals("Mining", module.status());
+        assertTrue(currentGoal().isInGoal(9, -7, 8));
+        assertFalse(currentGoal().isInGoal(8, -8, 8), "not under its feet");
+    }
+
+    @Test
+    void movesOnFromABlockAboveItThatItCantMine() throws Exception {
+        want("cobbled_deepslate");
+        putBotOnTheTopLevel();
+        waitForMiningABlock();
+
+        pathEnds(false);
+
+        assertTrue(outOfReach().contains(new BlockPos(8, -5, 8)));
+        waitForPath();
+        assertTrue(currentGoal().isInGoal(9, -7, 8));
+        assertTrue(BlockMinerPlugin.PLUGIN_CONFIG.enabled);
+    }
+
+    @Test
+    void givesUpOnABlockAboveItThatsTakingForever() throws Exception {
+        want("cobbled_deepslate");
+        putBotOnTheTopLevel();
+        waitForMiningABlock();
+
+        tick(20 * 30);
+        assertTrue(miningABlock(), "that's long enough for anything it could mine");
+        tick(2);
+
+        assertFalse(miningABlock());
+        assertTrue(outOfReach().contains(new BlockPos(8, -5, 8)));
+    }
+
+    @Test
+    void stoppingMiningStopsMiningABlockToo() throws InterruptedException {
+        want("cobbled_deepslate");
+        putBotOnTheTopLevel();
+        waitForMiningABlock();
+
+        module.blocksChanged();
+
+        assertFalse(miningABlock());
     }
 
     @Test
@@ -184,13 +277,13 @@ class ChoosingHowToMineTest {
 
     @Test
     void wontGoForABlockBelowTheLowestLevel() throws InterruptedException {
-        world.set(10, -55, 8, BlockRegistry.ANCIENT_DEBRIS);
+        world.set(10, -59, 8, BlockRegistry.ANCIENT_DEBRIS);
         want("ancient_debris");
         TestWorld.putBotAt(8.5, -40, 8.5);
 
         waitForPath();
 
-        assertFalse(currentGoal().isInGoal(10, -55, 8));
+        assertFalse(currentGoal().isInGoal(10, -59, 8));
         assertTrue(module.status().startsWith("Looking for ancient_debris"), "status: " + module.status());
     }
 
@@ -222,44 +315,52 @@ class ChoosingHowToMineTest {
         want("cobbled_deepslate");
         TestWorld.putBotAt(8.5, -30, 8.5);
         waitForPath();
-        BlockScan.MiningArea area = miningArea();
-        assertEquals(new BlockScan.MiningArea(8, 8, BlockScan.MINING_AREA_RADIUS), area);
+        assertSectionCentredOn(8, 8);
 
         TestWorld.putBotAt(20.5, -30, 12.5);
         pathEnds(true);
-        assertEquals(area, miningArea(), "still in the same area");
+        assertSectionCentredOn(8, 8);
 
         // Moved a long way, such as by dying or by someone playing as the bot.
-        TestWorld.putBotAt(70.5, -30, 70.5);
+        TestWorld.putBotAt(-60.5, -30, -60.5);
         pathEnds(true);
-        assertEquals(new BlockScan.MiningArea(70, 70, BlockScan.MINING_AREA_RADIUS), miningArea());
+        assertSectionCentredOn(-61, -61);
+        assertEquals(-7, miningArea().level(), "it starts again from the top");
     }
 
     @Test
-    void startsANewAreaOnceItsUsedUpTheLastOne() throws Exception {
+    void goesOnToTheTopOfTheNextSectionOnceItsFinishedThisOne() throws Exception {
         want("cobbled_deepslate");
         TestWorld.putBotAt(8.5, -40, 8.5);
         waitForPath();
-        assertEquals(new BlockScan.MiningArea(8, 8, BlockScan.MINING_AREA_RADIUS), miningArea());
+        assertSectionCentredOn(8, 8);
+        assertEquals(-7, miningArea().level());
 
-        // Everything in its area is gone, all the way down to the lowest level.
+        // Everything in its section is gone, all the way down to the lowest level.
         for (int x = -16; x <= 32; x++) {
             for (int z = -16; z <= 32; z++) {
-                for (int y = -50; y <= -1; y++) {
+                for (int y = -58; y <= -1; y++) {
                     world.set(x, y, z, BlockRegistry.AIR);
                 }
             }
         }
-        TestWorld.putBotAt(8.5, -50, 8.5);
+        TestWorld.putBotAt(8.5, -58, 8.5);
         pathEnds(true);
 
         assertTrue(followingAPath());
-        assertNull(miningArea(), "it starts a new one from wherever it ends up");
+        assertSectionCentredOn(56, 8);
+        assertEquals(-7, miningArea().level());
+        assertEquals(WALKING, module.status());
+    }
 
-        TestWorld.putBotAt(40.5, -50, 8.5);
-        pathEnds(true);
+    @Test
+    void startsANewSectionFromWhereverItEndsUpAfterGoingForTheNearest() throws Exception {
+        world.set(60, 20, 8, BlockRegistry.ANCIENT_DEBRIS);
+        want("ancient_debris");
+        TestWorld.putBotAt(8.5, -40, 8.5);
+        waitForPath();
 
-        assertEquals(new BlockScan.MiningArea(40, 8, BlockScan.MINING_AREA_RADIUS), miningArea());
+        assertNull(miningArea(), "it's not keeping to anywhere for this");
     }
 
     // ----------------------------------------------------------------------------------------
@@ -345,13 +446,13 @@ class ChoosingHowToMineTest {
         want("cobbled_deepslate");
         TestWorld.putBotAt(8.5, -30, 8.5);
         waitForPath();
-        assertTrue(currentGoal().isInGoal(9, -30, 8));
+        assertTrue(currentGoal().isInGoal(8, -7, 8));
 
         pathEnds(false);
         waitForPath();
 
         assertFalse(outOfReach().isEmpty());
-        assertFalse(currentGoal().isInGoal(9, -30, 8), "that one was out of reach");
+        assertFalse(currentGoal().isInGoal(8, -7, 8), "that one was out of reach");
     }
 
     @Test
@@ -367,7 +468,7 @@ class ChoosingHowToMineTest {
         pathEnds(true);
 
         assertTrue(outOfReach().isEmpty());
-        assertTrue(currentGoal().isInGoal(9, -30, 8), "worth another try");
+        assertTrue(currentGoal().isInGoal(8, -7, 8), "worth another try");
     }
 
     @Test

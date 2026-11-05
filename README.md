@@ -33,8 +33,8 @@ Before turning it on:
   - **Empty shulker boxes** of any colour, for storing what it mines.
   - **A shulker box of fresh tools**, for replacing worn ones. Include the right kind for what you're
     after: see [Choosing what to mine](#choosing-what-to-mine).
-- Give the bot an **ender chest** in case none is loaded nearby, and a **crafting table** if it should
-  craft items into blocks and there isn't one nearby.
+- Give the bot **some ender chests**, as it leaves one behind on each level it stores things from, and a
+  **crafting table** if it should craft items into blocks and there isn't one nearby.
 - Give the bot **a stack of what it's mining**, such as diamonds for diamond ore. It's optional, but
   it means junk is kept out from the very start.
 - Don't leave other shulker boxes in the bot's inventory. Any it's carrying when it starts an errand go
@@ -111,29 +111,39 @@ an errand lets the errand finish first, so a shulker box isn't left on the groun
 
 ### Mining
 
-**The bot never goes below Y -50**, whatever it's after, which keeps it clear of bedrock and the lava
-lakes. That's 14 blocks above the bottom of the world, so it's Y 14 in the Nether. If it starts lower than
-that, it climbs up first. Blocks below that are left alone, and so is an ender chest down there.
+**The bot never goes below Y -58**, whatever it's after, which keeps its floor above the bedrock. That's 6
+blocks above the bottom of the world, so it's Y 6 in the Nether. If it starts lower than that, it climbs up
+first. Blocks below that are left alone, and so is an ender chest down there. Lava is common that far down.
+It won't break anything touching lava, but it's the most dangerous place it goes.
 
-It walks into each block it mines and so collects what drops, and the pathfinder's `allowBreak` setting has
-to be on. It decides where to go itself rather than using ZenithProxy's own miner, which can't be told to
-stay above a height. Left alone, that digs straight down until it's stuck in the bedrock, explores at Y -59,
-and with a block that's everywhere, its search can run the whole proxy out of memory.
+The pathfinder's `allowBreak` setting has to be on. The bot decides where to go itself rather than using
+ZenithProxy's own miner, which can't be told to stay above a height. Left alone, that digs straight down
+until it's stuck in the bedrock, explores at Y -59, and with a block that's everywhere, its search can run
+the whole proxy out of memory.
 
-What it does next depends on how much of what you asked for is around it, which it keeps checking as it
-moves. A block counts as everywhere if there are 256 or more within 16 blocks of the bot.
+What it does next depends on what you asked for.
 
-**Blocks that are everywhere**, such as deepslate, stone or netherrack:
+**Blocks that are everywhere**, such as deepslate, stone or netherrack, get mined from the top down, one
+section at a time. A section is everything within 24 blocks of where it starts.
 
-1. It mines outwards on one flat level, breaking the blocks at its feet and head.
-2. It stays within 24 blocks of where it started, so that it can keep using the same ender chest.
-3. Once that level is used up in that area, it goes down two levels and carries on.
-4. Once the area is used up all the way down to Y -50, it moves on and starts a new area next to it.
+1. It goes to the top of the section, which is the highest layer that's mostly what you asked for. It digs
+   its way there from wherever it is, and the status says `Walking to the nearest ...` until it arrives.
+2. At each spot it mines everything it can reach straight above it without moving, which clears a room 7
+   blocks high. What it mines falls on it, so it collects it. Then it moves to the next spot along a flat
+   floor, collecting what's at its feet and head as it walks in.
+3. Once that level is used up, it digs down to the next one, 7 blocks lower.
+4. Once the section is used up all the way down to Y -58, it digs back up to the top of the next section
+   along, and starts again. It carries on in a straight line, turning if the next one is already mined out.
 
-If it starts above the blocks it's after, it digs down from where it's standing until most of what's around
-it is what it wants, and the status says `Walking to the nearest ...` until then.
+A few odd blocks don't count as the top, and neither does a layer that's mostly something else. So for
+deepslate it starts about where stone gives way to deepslate, not at a stray block higher up.
 
-**Blocks worth looking for**, such as ores, aren't kept to an area, since there wouldn't be many in it. It
+At each spot, it mines through something you didn't ask for if there's more of what you want above it,
+the same as it does when it walks. It stops there if it comes to something that would fall on it, anything
+touching lava or water, or a container. It doesn't go back for what that leaves, or for blocks with a
+cave under them that it can't stand on, so expect a few bits left hanging.
+
+**Blocks worth looking for**, such as ores, aren't kept to a section, since there wouldn't be many in it. It
 goes for the nearest ones in the loaded chunks, wherever they are. If none are loaded, it goes looking for
 more, heading off in a straight line until some come into range, and the status says `Looking for ...`.
 So don't leave the bot mining somewhere it shouldn't dig.
@@ -218,7 +228,9 @@ Add anything else it needs to carry, such as `firework_rocket`, with `blockminer
 
 For the ender chest, the bot uses the nearest loaded one within 48 blocks, or further away if it isn't
 carrying one. Otherwise it places one beside itself and leaves it there for later. It won't use one below
-Y -50.
+Y -58. If it's carrying one, it won't go back up for one that's more than 2 blocks above it, since that's on
+a level it's finished with and the floor it stood on is gone. So it gets through about one ender chest for
+each level it stores things from.
 
 ### Crafting into blocks
 
@@ -304,11 +316,14 @@ the ground.
   at the same time will conflict with it. If the sign plugin is installed, run both `signplacer off` and
   `restock off`, because the restocker starts by itself whenever the bot is low on signs.
 - A drop that flies off somewhere can get left behind, as the bot doesn't go back for drops. Normally
-  that's not an issue, because it walks into each block it mines.
+  that's not an issue, because it walks into the blocks it mines, and the rest fall on it.
+- **A section turns into a big open pit**, up to around 60 blocks deep in deepslate. It's dark, so mobs can
+  spawn in it, and the bot doesn't fight them. Use ZenithProxy's own modules for that.
 - Junk it leaves on the ground can land in a slot the moment one frees up, such as while it's storing
   things. That's harmless: it just gets thrown away again later.
-- A placed ender chest stays where the bot put it, so it can get broken if it ends up in the way of
-  mining, which only drops obsidian without Silk Touch.
+- A placed ender chest stays where the bot put it, so it's left hanging once the level under it gets
+  mined. It can also get broken if it ends up in the way of mining, which only drops obsidian without Silk
+  Touch.
 
 ## Configuration
 

@@ -42,6 +42,8 @@ public class BlockMinerModule extends Module {
     // The pathfinder won't search again any sooner than this after failing to find a path.
     private static final int NO_PATH_RETRY_TICKS = 20;
     private static final int NO_PATH_TRIES = 3;
+    // A block overhead takes moments to mine, or a few seconds without the right tool.
+    private static final int MINING_OVERHEAD_TIMEOUT_TICKS = 20 * 30;
     // Blocks it couldn't get to might be fine from somewhere else, once it's moved on.
     private static final int OUT_OF_REACH_MEMORY_TICKS = 20 * 60 * 5;
     // Enough to be clear of what it was stuck in, and it mines on from there.
@@ -74,6 +76,7 @@ public class BlockMinerModule extends Module {
     private volatile long nextToolCheckTick;
 
     private volatile @Nullable PathingRequestFuture mining;
+    private long miningStartedTick;
     private volatile long nextMineTick;
     private boolean reportedBreakingOff;
     private boolean reportedNothingChosen;
@@ -200,7 +203,11 @@ public class BlockMinerModule extends Module {
         // A command on another thread can clear this at any moment.
         PathingRequestFuture current = mining;
         if (current != null) {
-            if (!current.isCompleted()) return;
+            if (!current.isCompleted()) {
+                // Reads as a block it couldn't get to, next time round. Nothing else would end it.
+                if (isMiningOverhead() && tick - miningStartedTick > MINING_OVERHEAD_TIMEOUT_TICKS) BARITONE.stop();
+                return;
+            }
             miningEnded(current.getNow());
         }
         // Finding out why it ended can turn the module off.
@@ -269,10 +276,20 @@ public class BlockMinerModule extends Module {
             return;
         }
         reportedExploring = false;
-        // Wherever it ends up is where it carries on from.
-        if (currentGoal.leavesArea()) miningArea = null;
+        miningArea = currentGoal.area();
+        miningStartedTick = tick;
+        if (currentGoal.goal() == null) {
+            BlockPos block = currentGoal.blocks().getFirst();
+            mining = BARITONE.breakBlock(block.x(), block.y(), block.z(), true);
+            status = "Mining";
+            return;
+        }
         mining = BARITONE.pathTo(currentGoal.goal());
         status = currentGoal.onBotsLevel() ? "Mining" : "Walking to the nearest " + names;
+    }
+
+    private boolean isMiningOverhead() {
+        return !climbingOut && currentGoal != null && currentGoal.goal() == null;
     }
 
     private void noPathFound() {

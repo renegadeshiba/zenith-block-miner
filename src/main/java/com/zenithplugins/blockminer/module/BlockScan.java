@@ -10,6 +10,7 @@ import com.zenith.feature.pathfinder.goals.GoalTwoBlocks;
 import com.zenith.feature.pathfinder.goals.GoalXZ;
 import com.zenith.feature.pathfinder.movement.CalculationContext;
 import com.zenith.feature.pathfinder.movement.MovementHelper;
+import com.zenith.feature.pathfinder.process.InteractWithProcess;
 import com.zenith.feature.pathfinder.process.MineProcess;
 import com.zenith.feature.pathfinder.util.BlockOptionalMetaLookup;
 import com.zenith.feature.player.World;
@@ -56,40 +57,73 @@ final class BlockScan {
     private static final int GOAL_BLOCKS = 64;
     private static final int MAX_CHUNKS_AWAY = 32;
 
-    // Y -50 in the overworld. Bedrock goes up to 4 above the bottom of the world, and the overworld's lava
-    // lakes to 10 above that.
-    private static final int LOWEST_LEVEL_ABOVE_WORLD_BOTTOM = 14;
+    // Y -58 in the overworld. Bedrock goes up to 4 above the bottom of the world, so that leaves a block
+    // between it and the bot's floor, which keeps it out of the pits in the bedrock.
+    private static final int LOWEST_LEVEL_ABOVE_WORLD_BOTTOM = 6;
     // About 10,000 blocks of walking, so no real way around is ever rejected in favour of going lower.
     private static final double BELOW_LOWEST_LEVEL_PENALTY = 50_000;
     // Per block further down, so a bot that's already down there heads up.
     private static final double DEEPER_PENALTY = 20;
     private static final double PRESSING_ON_WEIGHT = 6;
 
-    // Around 0.7% of the blocks in range. Stone-like blocks are far above that, and even the commonest
-    // ores are below it, so it tells a block that's everywhere from one worth going to look for.
-    private static final int PLENTIFUL_RANGE = 16;
-    private static final int PLENTIFUL_COUNT = 256;
+    // Less of a layer than this, as a share of a whole section, is just a few odd blocks, like part of
+    // someone's build, and not worth climbing to.
+    private static final int LEAST_PERCENT_OF_A_LAYER = 1;
 
-    private static final int LEVEL_CHECK_RANGE = 4;
+    // Its feet and head, then all that it can reach straight above it from the floor, which is up to the
+    // underside of a block. What it mines up there falls on the bot, so it gets picked up without going
+    // anywhere.
+    private static final int ROOM_HEIGHT = 7;
 
-    // Errands use an ender chest within 48 blocks rather than placing another one, and no two places in
-    // an area this size are further apart than that. Left to go wherever's nearest, the bot tunnels off
-    // in a line and leaves a trail of ender chests behind it, until it has none left.
+    // Errands use an ender chest within 48 blocks rather than placing another one, and no two places on
+    // a level of a section this size are further apart than that. Left to go wherever's nearest, the bot
+    // tunnels off in a line and leaves a trail of ender chests behind it, until it has none left.
     static final int MINING_AREA_RADIUS = 24;
 
     // Far enough for a good look at what comes into range, before deciding whether to go any further.
     private static final int EXPLORING_BLOCKS = 32;
-    private static final int[][] EXPLORING_DIRECTIONS = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}};
+    private static final int[][] DIRECTIONS = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}};
 
-    /** Where the bot keeps its mining to, for a block that's everywhere. */
-    record MiningArea(int centreX, int centreZ, int radius) {
+    /**
+     * A section of the world the bot mines out from the top down, for a block that's everywhere. {@code level}
+     * is the one it's working on, and {@code heading} is the way it goes once this section is finished.
+     */
+    record MiningArea(int centreX, int centreZ, int radius, int level, int heading) {
+        private static final int NOT_STARTED = Integer.MAX_VALUE;
+
+        MiningArea(int centreX, int centreZ, int radius) {
+            this(centreX, centreZ, radius, NOT_STARTED, 0);
+        }
+
+        boolean hasStarted() {
+            return level != NOT_STARTED;
+        }
+
+        MiningArea onLevel(int newLevel) {
+            return new MiningArea(centreX, centreZ, radius, newLevel, heading);
+        }
+
+        /** The section touching this one, straight ahead, or after this many turns. */
+        MiningArea next(int turns) {
+            int newHeading = Math.floorMod(heading + turns, DIRECTIONS.length);
+            return new MiningArea(
+                centreX + DIRECTIONS[newHeading][0] * radius * 2,
+                centreZ + DIRECTIONS[newHeading][1] * radius * 2,
+                radius,
+                NOT_STARTED,
+                newHeading);
+        }
+
         boolean contains(int x, int z) {
             return distanceSq(x, z) <= (long) radius * radius;
         }
 
-        /** True if the bot isn't anywhere near this any more, such as after dying or being moved. */
+        /**
+         * True if the bot isn't anywhere near this any more, such as after dying or being moved. It sets
+         * off for the next section from as much as three radiuses away.
+         */
         boolean isFarFrom(int x, int z) {
-            return distanceSq(x, z) > 4L * radius * radius;
+            return distanceSq(x, z) > 16L * radius * radius;
         }
 
         boolean touchesChunk(int baseX, int baseZ) {
@@ -106,11 +140,13 @@ final class BlockScan {
     }
 
     /**
-     * Where to go next. {@code blocks} are what it's going for, {@code onBotsLevel} is whether that's
-     * mining on the level the bot is on rather than still getting somewhere, and {@code leavesArea} is
-     * whether this takes it away from its area, so it should start a new one from wherever it ends up.
+     * What to do next. {@code blocks} are what it's going for. With a {@code goal}, it walks there to stand
+     * in one of them. With none, there's just the one block, within reach, to mine from where it stands.
+     * {@code onBotsLevel} is whether that's mining on the level it's working on rather than still getting
+     * there, and {@code area} is the section to carry on with, or null to start a new one from wherever it
+     * ends up.
      */
-    record MiningGoal(Goal goal, List<BlockPos> blocks, boolean onBotsLevel, boolean leavesArea) {
+    record MiningGoal(@Nullable Goal goal, List<BlockPos> blocks, boolean onBotsLevel, @Nullable MiningArea area) {
     }
 
     /**
@@ -156,94 +192,193 @@ final class BlockScan {
     }
 
     /**
-     * True if there's so much of this close to the bot that it's a block that's everywhere, rather than
-     * one worth going to look for. Blocks below the lowest level don't count.
+     * What the bot does next. Nothing below the lowest level counts, whatever it is.
+     *
+     * <p>A block that's everywhere gets mined from the top down, a section at a time. It starts on the highest
+     * layer of its section that's mostly what it's after, and at each spot mines all it can reach above it,
+     * then outwards along a flat floor. With that level used up it goes down to the next, and when there
+     * are none left it moves on to the top of the next section. Going down, it never has to climb until
+     * it's finished the whole section.
+     *
+     * <p>Anything else is worth going to look for, so it goes for the nearest ones in the loaded chunks.
+     *
+     * @param outOfReach blocks it's already failed to get to
+     * @return null if there's nothing it can go for in the loaded chunks
      */
-    static boolean isPlentifulNearby(BlockOptionalMetaLookup filter) {
-        IntSet states = filter.getBlockStateIds();
+    static @Nullable MiningGoal miningGoal(BlockOptionalMetaLookup filter, MiningArea area, Set<BlockPos> outOfReach) {
+        PlayerCache player = CACHE.getPlayerCache();
+
+        // On the same setting Zenith's miner does this on. Everything else can wait.
+        if (CONFIG.client.extra.pathfinder.mineProcessExitLavaGoal && MovementHelper.isPlayerTouchingLava()) {
+            Goal awayFromLava = new GoalAvoidBlocks(
+                MathHelper.floorI(player.getX()), MathHelper.floorI(player.getY()), MathHelper.floorI(player.getZ()),
+                BlockRegistry.LAVA);
+            return new MiningGoal(awayFromLava, List.of(), false, area);
+        }
+
+        CalculationContext context = new CalculationContext();
+        MiningGoal goal = goalInSection(filter, area, outOfReach, context);
+        if (goal != null) return goal;
+
+        // With nothing worth mining in a section it hasn't even started, this isn't a block that's everywhere
+        // around here, so there's no point looking at the sections next to it.
+        if (area.hasStarted()) {
+            for (int turns = 0; turns < DIRECTIONS.length; turns++) {
+                goal = goalInSection(filter, area.next(turns), outOfReach, context);
+                if (goal != null) return goal;
+            }
+        }
+
+        int lowestLevel = lowestLevel();
+        List<BlockPos> blocks = choose(nearest(filter, GOAL_CANDIDATES, lowestLevel, Integer.MAX_VALUE, null), outOfReach, context);
+        return blocks.isEmpty() ? null : new MiningGoal(goalInBlocks(blocks, lowestLevel), blocks, false, null);
+    }
+
+    /** What to do next in this section, or null if there's nothing left to do in it. */
+    private static @Nullable MiningGoal goalInSection(
+        BlockOptionalMetaLookup filter, MiningArea area, Set<BlockPos> outOfReach, CalculationContext context
+    ) {
+        Integer level = area.hasStarted() ? Integer.valueOf(area.level()) : levelToClear(filter, area, Integer.MAX_VALUE);
+        while (level != null) {
+            MiningGoal goal = goalOnLevel(filter, area.onLevel(level), outOfReach, context);
+            if (goal != null) return goal;
+            level = levelToClear(filter, area, level - 1);
+        }
+        return null;
+    }
+
+    /** What to do next on this section's level, or null if there's nothing left to do on it. */
+    private static @Nullable MiningGoal goalOnLevel(
+        BlockOptionalMetaLookup filter, MiningArea area, Set<BlockPos> outOfReach, CalculationContext context
+    ) {
         PlayerCache player = CACHE.getPlayerCache();
         int botX = MathHelper.floorI(player.getX());
         int botY = MathHelper.floorI(player.getY());
         int botZ = MathHelper.floorI(player.getZ());
-        int lowestY = Math.max(botY - PLENTIFUL_RANGE, lowestLevel());
-        int highestY = botY + PLENTIFUL_RANGE;
-        int minY = World.getCurrentDimension().minY();
+        int level = area.level();
+        boolean onLevel = botY == level;
 
-        int found = 0;
-        for (int chunkX = (botX - PLENTIFUL_RANGE) >> 4; chunkX <= (botX + PLENTIFUL_RANGE) >> 4; chunkX++) {
-            for (int chunkZ = (botZ - PLENTIFUL_RANGE) >> 4; chunkZ <= (botZ + PLENTIFUL_RANGE) >> 4; chunkZ++) {
+        if (onLevel) {
+            BlockPos overhead = blockToMineOverhead(filter, botX, botY, botZ, outOfReach, context);
+            if (overhead != null) return new MiningGoal(null, List.of(overhead), true, area);
+        }
+        List<BlockPos> blocks = chooseOnLevel(nearest(filter, GOAL_CANDIDATES, level, level + 1, area), level, outOfReach, context);
+        if (blocks.isEmpty()) return null;
+        Goal goal = goalOnLevel(blocks, level, lowestLevel(), onLevel ? 1 : PRESSING_ON_WEIGHT);
+        return new MiningGoal(goal, blocks, onLevel, area);
+    }
+
+    /**
+     * The next block to mine straight above the bot, from where it stands, or null if there's nothing more
+     * to do up there. That's the lowest block in the way, as long as there's something it's after at or
+     * above it. It stops at anything it shouldn't mine rather than reaching past it, and that includes
+     * what's holding up something that falls, since that would land on it.
+     */
+    private static @Nullable BlockPos blockToMineOverhead(
+        BlockOptionalMetaLookup filter, int botX, int botY, int botZ, Set<BlockPos> outOfReach, CalculationContext context
+    ) {
+        BlockPos lowest = null;
+        for (int height = 2; height < ROOM_HEIGHT; height++) {
+            BlockPos pos = new BlockPos(botX, botY + height, botZ);
+            Block block = World.getBlock(pos);
+            if (block.isAir()) continue;
+            if (outOfReach.contains(pos)
+                || World.getBlock(pos.x(), pos.y() + 1, pos.z()).fallingBlock()
+                || !RoomBeside.canMine(new int[]{pos.x(), pos.y(), pos.z()}, context)) {
+                return null;
+            }
+            if (lowest == null) lowest = pos;
+            if (filter.has(block)) {
+                return new InteractWithProcess.BreakBlock(lowest.x(), lowest.y(), lowest.z(), true).canInteract() ? lowest : null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The level to stand on to clear the highest layer worth mining, no higher than {@code highestY}, or null
+     * if there isn't one. That's as low as can still reach that layer, unless what's down there is mostly
+     * something else, as it would have to dig through that to get around.
+     */
+    private static @Nullable Integer levelToClear(BlockOptionalMetaLookup filter, MiningArea area, int highestY) {
+        Integer top = highestLayerWorthMining(filter, area, highestY);
+        if (top == null) return null;
+        int lowestLevel = lowestLevel();
+        for (int level = Math.max(lowestLevel, top - ROOM_HEIGHT + 1); level < top - 1; level++) {
+            LayerCount feet = LayerCount.of(filter, area, level);
+            LayerCount head = LayerCount.of(filter, area, level + 1);
+            if (feet.wanted() + head.wanted() > feet.unwanted() + head.unwanted()) return level;
+        }
+        return Math.max(lowestLevel, top - 1);
+    }
+
+    /**
+     * The highest layer of this section, no higher than {@code highestY} and not below the lowest level, with
+     * more than a few of what it's after, making up at least as much as everything else solid there. Even
+     * the commonest ores are nothing like that much of a layer, so this is also what tells a block that's
+     * everywhere from one worth going to look for.
+     *
+     * @return null if there are none
+     */
+    static @Nullable Integer highestLayerWorthMining(BlockOptionalMetaLookup filter, MiningArea area, int highestY) {
+        DimensionData dimension = World.getCurrentDimension();
+        int minY = dimension.minY();
+        int lowestLevel = lowestLevel();
+        IntSet states = filter.getBlockStateIds();
+        int y = Math.min(highestY, minY + dimension.height() - 1);
+        while (y >= lowestLevel) {
+            int section = (y - minY) >> 4;
+            if (!sectionMightHold(area, section, states)) {
+                y = minY + (section << 4) - 1;
+                continue;
+            }
+            LayerCount layer = LayerCount.of(filter, area, y);
+            if (layer.wanted() >= layer.unwanted() && layer.wanted() * 100 >= layer.cells() * LEAST_PERCENT_OF_A_LAYER) {
+                return y;
+            }
+            y--;
+        }
+        return null;
+    }
+
+    private static boolean sectionMightHold(MiningArea area, int section, IntSet states) {
+        for (int chunkX = (area.centreX() - area.radius()) >> 4; chunkX <= (area.centreX() + area.radius()) >> 4; chunkX++) {
+            for (int chunkZ = (area.centreZ() - area.radius()) >> 4; chunkZ <= (area.centreZ() + area.radius()) >> 4; chunkZ++) {
                 Chunk chunk = World.getChunk(chunkX, chunkZ);
-                if (chunk == null) continue;
-                ChunkSection[] sections = chunk.getSections();
-                for (int index = 0; index < sections.length; index++) {
-                    int baseY = minY + (index << 4);
-                    if (baseY > highestY || baseY + 15 < lowestY || !mightHold(sections[index], states)) continue;
-                    for (int y = Math.max(lowestY, baseY); y <= Math.min(highestY, baseY + 15); y++) {
-                        for (int z = 0; z < 16; z++) {
-                            if (Math.abs((chunkZ << 4 | z) - botZ) > PLENTIFUL_RANGE) continue;
-                            for (int x = 0; x < 16; x++) {
-                                if (Math.abs((chunkX << 4 | x) - botX) > PLENTIFUL_RANGE) continue;
-                                if (states.contains(sections[index].getBlock(x, y - baseY, z)) && ++found >= PLENTIFUL_COUNT) {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
+                if (chunk != null && area.touchesChunk(chunkX << 4, chunkZ << 4) && mightHold(chunk.getSections()[section], states)) {
+                    return true;
                 }
             }
         }
         return false;
     }
 
-    /**
-     * Where to send the pathfinder next, to stand in a block and so break it. Nothing below the lowest
-     * level counts, whatever it is.
-     *
-     * <p>For a block worth looking for, that's the nearest ones anywhere in the loaded chunks. For a block
-     * that's everywhere, it's on the bot's own level, at its feet or head, so it mines outwards along a
-     * flat floor. Once that's used up in its area, or there's not much of what it wants on this level, it
-     * goes down a level, and once it's used up its area all the way down, it looks further out.
-     *
-     * @param outOfReach blocks it's already failed to find a way to
-     * @return null if there's nothing it can go for in the loaded chunks
-     */
-    static @Nullable MiningGoal miningGoal(BlockOptionalMetaLookup filter, MiningArea area, Set<BlockPos> outOfReach) {
-        PlayerCache player = CACHE.getPlayerCache();
-        int botX = MathHelper.floorI(player.getX());
-        int botY = MathHelper.floorI(player.getY());
-        int botZ = MathHelper.floorI(player.getZ());
-
-        // On the same setting Zenith's miner does this on. Everything else can wait.
-        if (CONFIG.client.extra.pathfinder.mineProcessExitLavaGoal && MovementHelper.isPlayerTouchingLava()) {
-            return new MiningGoal(new GoalAvoidBlocks(botX, botY, botZ, BlockRegistry.LAVA), List.of(), false, false);
-        }
-
-        int lowestLevel = lowestLevel();
-        CalculationContext context = new CalculationContext();
-        if (isPlentifulNearby(filter)) {
-            if (botY >= lowestLevel && levelIsWorthMining(filter, botX, botY, botZ)) {
-                List<BlockPos> blocks = choose(nearest(filter, GOAL_CANDIDATES, botY, botY + 1, area), outOfReach, context);
-                if (!blocks.isEmpty()) return new MiningGoal(goalOnLevel(blocks, botY, lowestLevel), blocks, true, false);
+    /** How much of a layer of a section is what it's after, and how much is anything else that isn't air. */
+    private record LayerCount(int wanted, int unwanted, int cells) {
+        static LayerCount of(BlockOptionalMetaLookup filter, MiningArea area, int y) {
+            int wanted = 0;
+            int unwanted = 0;
+            int cells = 0;
+            for (int x = area.centreX() - area.radius(); x <= area.centreX() + area.radius(); x++) {
+                for (int z = area.centreZ() - area.radius(); z <= area.centreZ() + area.radius(); z++) {
+                    if (!area.contains(x, z)) continue;
+                    cells++;
+                    Block block = World.getBlock(x, y, z);
+                    if (filter.has(block)) {
+                        wanted++;
+                    } else if (!block.isAir()) {
+                        unwanted++;
+                    }
+                }
             }
-            // Two down rather than one, as one down it would have already mined at head height.
-            List<BlockPos> blocks = choose(nearest(filter, GOAL_CANDIDATES, lowestLevel, botY - 2, area), outOfReach, context);
-            if (!blocks.isEmpty()) return new MiningGoal(goalInBlocks(blocks, lowestLevel), blocks, false, false);
-
-            // Nothing higher than it can reach, as a ceiling it's dug out from under it is too far up.
-            int highestReachable = Math.max(botY + 1, lowestLevel + 1);
-            blocks = choose(nearest(filter, GOAL_CANDIDATES, lowestLevel, highestReachable, area), outOfReach, context);
-            if (!blocks.isEmpty()) return new MiningGoal(goalInBlocks(blocks, lowestLevel), blocks, false, false);
-            blocks = choose(nearest(filter, GOAL_CANDIDATES, lowestLevel, highestReachable, null), outOfReach, context);
-            if (!blocks.isEmpty()) return new MiningGoal(goalInBlocks(blocks, lowestLevel), blocks, false, true);
+            return new LayerCount(wanted, unwanted, cells);
         }
-        List<BlockPos> blocks = choose(nearest(filter, GOAL_CANDIDATES, lowestLevel, Integer.MAX_VALUE, null), outOfReach, context);
-        return blocks.isEmpty() ? null : new MiningGoal(goalInBlocks(blocks, lowestLevel), blocks, false, true);
     }
 
     /** Somewhere further off in this direction, to bring more chunks into range when none of them help. */
     static Goal exploringGoal(int direction) {
         PlayerCache player = CACHE.getPlayerCache();
-        int[] heading = EXPLORING_DIRECTIONS[Math.floorMod(direction, EXPLORING_DIRECTIONS.length)];
+        int[] heading = DIRECTIONS[Math.floorMod(direction, DIRECTIONS.length)];
         return new AboveLowestLevel(
             new GoalXZ(
                 MathHelper.floorI(player.getX()) + heading[0] * EXPLORING_BLOCKS,
@@ -252,27 +387,14 @@ final class BlockScan {
             PRESSING_ON_WEIGHT);
     }
 
-    /**
-     * True unless most of what's solid around the bot, at its own height, isn't what it's after. Where
-     * one block is giving way to another, such as stone to deepslate, staying level would mean digging
-     * through mostly the wrong one.
-     */
-    private static boolean levelIsWorthMining(BlockOptionalMetaLookup filter, int botX, int botY, int botZ) {
-        int wanted = 0;
-        int unwanted = 0;
-        for (int x = botX - LEVEL_CHECK_RANGE; x <= botX + LEVEL_CHECK_RANGE; x++) {
-            for (int z = botZ - LEVEL_CHECK_RANGE; z <= botZ + LEVEL_CHECK_RANGE; z++) {
-                for (int y = botY; y <= botY + 1; y++) {
-                    Block block = World.getBlock(new BlockPos(x, y, z));
-                    if (filter.has(block)) {
-                        wanted++;
-                    } else if (!block.isAir()) {
-                        unwanted++;
-                    }
-                }
-            }
-        }
-        return wanted >= unwanted;
+    /** Only ones with a floor to stand on, as nothing else gets it onto the level there. */
+    private static List<BlockPos> chooseOnLevel(
+        List<BlockPos> candidates, int level, Set<BlockPos> outOfReach, CalculationContext context
+    ) {
+        return choose(
+            candidates.stream().filter(pos -> MovementHelper.canWalkOn(pos.x(), level - 1, pos.z())).toList(),
+            outOfReach,
+            context);
     }
 
     private static List<BlockPos> choose(List<BlockPos> candidates, Set<BlockPos> outOfReach, CalculationContext context) {
@@ -285,17 +407,17 @@ final class BlockScan {
 
     /**
      * To stand in the column of one of these blocks, on exactly this level. Going for a block at head
-     * height by stepping up onto the one below it would save breaking a block, but then it's mining one
-     * layer at a time, at half the speed.
+     * height by stepping up onto the one below it would save breaking a block, but then it's working its
+     * way up out of the level.
      */
-    private static Goal goalOnLevel(List<BlockPos> blocks, int level, int lowestLevel) {
+    private static Goal goalOnLevel(List<BlockPos> blocks, int level, int lowestLevel, double weight) {
         return new AboveLowestLevel(
             new GoalComposite(blocks.stream()
                 .map(pos -> new GoalBlock(pos.x(), level, pos.z()))
                 .distinct()
                 .toArray(Goal[]::new)),
             lowestLevel,
-            1);
+            weight);
     }
 
     private static Goal goalInBlocks(List<BlockPos> blocks, int lowestLevel) {

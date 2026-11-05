@@ -91,6 +91,8 @@ final class Bot {
 
     // Beyond this, placing a carried ender chest is quicker than walking to a loaded one.
     private static final int MAX_ENDER_CHEST_WALK = 48;
+    // Anything higher is on a level it's finished with, and the floor it could get back up there on is gone.
+    private static final int MAX_ENDER_CHEST_CLIMB = 2;
     private static final long FAILED_CHEST_COOLDOWN_MS = 10 * 60 * 1000;
     private static final int WALK_BACK_RANGE = 2;
 
@@ -675,12 +677,15 @@ final class Bot {
 
     int @Nullable [] nearestEnderChest() {
         failedChests.values().removeIf(expiry -> expiry <= System.currentTimeMillis());
+        boolean carrying = countItem(ItemRegistry.ENDER_CHEST.id()) > 0;
+        int feet = position()[1];
         int[] best = null;
         double bestDistance = Double.MAX_VALUE;
         for (int[] chest : BlockEntityScan.find(BlockEntityType.ENDER_CHEST)) {
             if (failedChests.containsKey(Arrays.toString(chest))) continue;
             // It doesn't go below the lowest level for anything.
             if (chest[1] < BlockScan.lowestLevel()) continue;
+            if (carrying && chest[1] > feet + MAX_ENDER_CHEST_CLIMB) continue;
             if (!isBlock(chest, ItemRegistry.ENDER_CHEST.name())) continue;
             double distance = distanceTo(chest);
             if (distance < bestDistance) {

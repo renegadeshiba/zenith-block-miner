@@ -4,6 +4,7 @@ import com.zenith.feature.pathfinder.calc.AStarPathFinder;
 import com.zenith.feature.pathfinder.calc.IPath;
 import com.zenith.feature.pathfinder.goals.Goal;
 import com.zenith.feature.pathfinder.movement.CalculationContext;
+import com.zenith.feature.pathfinder.process.InteractWithProcess;
 import com.zenith.feature.pathfinder.util.BlockOptionalMetaLookup;
 import com.zenith.feature.pathfinder.util.Favoring;
 import com.zenith.feature.pathfinder.util.PathCalculationResult;
@@ -41,6 +42,18 @@ final class PretendBot {
     private void moveTo(BlockPos pos) {
         at = pos;
         TestWorld.putBotAt(pos.x() + 0.5, pos.y(), pos.z() + 0.5);
+    }
+
+    /** Does what it's been told to, the same way the module sends it off to. Returns false if it couldn't. */
+    boolean carryOut(BlockScan.MiningGoal goal) {
+        return goal.goal() == null ? mine(goal.blocks().getFirst()) : followPathTo(goal.goal());
+    }
+
+    /** Mines a block from where it stands, if Zenith's own check says that it can. */
+    boolean mine(BlockPos block) {
+        if (!new InteractWithProcess.BreakBlock(block.x(), block.y(), block.z(), true).canInteract()) return false;
+        clear(block.x(), block.y(), block.z());
+        return true;
     }
 
     /** Goes all the way to the goal, one path after another. Returns false if it couldn't get there. */

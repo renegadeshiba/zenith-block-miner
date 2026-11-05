@@ -117,7 +117,7 @@ final class RoomBeside {
      * itself, or a crafting table that it might have put there. And not anything that falls, since what
      * falls in behind it fills the spot straight back up.
      */
-    private static boolean canMine(int[] pos, CalculationContext context) {
+    static boolean canMine(int[] pos, CalculationContext context) {
         Block block = blockAt(pos[0], pos[1], pos[2]);
         return block != null
             && !block.fallingBlock()
