@@ -158,11 +158,12 @@ public class BlockMinerModule extends Module {
             return;
         }
         if (roomNeeded) {
-            // An errand had nowhere to put something down, and won't until the bot is somewhere else.
-            // If it can't climb, the errand tries again a few times and then says what's wrong.
+            // An errand couldn't put something down, even by mining out a spot, so it's got to be
+            // somewhere else. Bedrock on every side is about the only way that happens.
             roomNeeded = false;
             stopMining();
-            if (climbingBlocks.allow()) startClimbingOut("Climbing to find room for its errand");
+            climbingBlocks.allow();
+            startClimbingOut("Climbing to find room for its errand");
         }
         // Getting out comes first, as nothing else can get done from where it's stuck.
         if (climbingOut) {
@@ -328,8 +329,7 @@ public class BlockMinerModule extends Module {
                 outOfReach.clear();
                 nextMineTick = 0;
             } else {
-                stopAndNotify("It's stuck at " + whereTheBotIs() + ", and even with blocks to build with it couldn't"
-                    + " find a way out. Get it out");
+                stopAndNotify("It's stuck at " + whereTheBotIs() + ", and couldn't find a way out. Get it out");
             }
             return;
         }

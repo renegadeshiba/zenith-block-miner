@@ -522,18 +522,20 @@ class ChoosingHowToMineTest {
 
         assertEquals("Climbing to find room for its errand", module.status());
         assertEquals(new GoalY(-24), currentGoal());
+        assertTrue(allowedToBuildWith("cobbled_deepslate"));
     }
 
     @Test
-    void leavesAnErrandToSayWhatsWrongIfItCantClimbForRoom() throws Exception {
+    void triesDiggingItsWayUpForRoomWithNothingToBuildWith() throws Exception {
         want("cobbled_deepslate");
         TestWorld.putBotAt(8.5, -30, 8.5);
         waitForPath();
         askForRoom();
 
-        tick();
+        tick(3);
 
-        assertTrue(BlockMinerPlugin.PLUGIN_CONFIG.enabled, "the errand's own retries decide when to stop");
-        assertFalse(module.status().startsWith("Climbing"), "status: " + module.status());
+        assertTrue(BlockMinerPlugin.PLUGIN_CONFIG.enabled);
+        assertEquals("Climbing to find room for its errand", module.status());
+        assertEquals(new GoalY(-24), currentGoal());
     }
 }

@@ -195,6 +195,11 @@ time, the bot:
 5. Repeats with another shulker box if there's more to store.
 6. Fills the empty slots with its target item again, then walks back and carries on mining.
 
+If there's no room beside it for the ender chest or a shulker box, it mines out a spot: the block next to
+it, and the one above that as well if it's in the way, as a shulker box needs that clear to open. It leaves
+the block underneath alone, and won't mine bedrock, anything with something in it, such as a chest or a
+sign, a crafting table, gravel or sand, or anything touching lava or water.
+
 A shulker box counts as started if it still has room and everything in it is what you asked for or what
 that crafts into. The fullest goes first, so that they get filled one at a time instead of being left
 part-full. Anything else in the ender chest is left alone, including your tool shulker box.
@@ -277,7 +282,7 @@ Anything else, such as a path it can't find, gets tried again after 30 seconds, 
 row before it stops the same way. Run `blockminer on` once it's sorted.
 
 If the bot can't get to anything it can mine, such as from a pit in the bedrock, it builds its way out with
-blocks it's carrying. It also does this if an errand has nowhere to put something down. The pathfinder only
+blocks it's carrying. It also does this if it can't mine out a spot to put something down. The pathfinder only
 builds with blocks on its `acceptableThrowawayItems` list, which doesn't include things like cobbled
 deepslate, so the bot adds common solid blocks it's carrying to that list just until it's out, and then
 takes off what it added. If it's carrying nothing it can use, you'll get a notification saying where it's

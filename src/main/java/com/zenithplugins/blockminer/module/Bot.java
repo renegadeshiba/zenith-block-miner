@@ -93,10 +93,6 @@ final class Bot {
     private static final int MAX_ENDER_CHEST_WALK = 48;
     private static final long FAILED_CHEST_COOLDOWN_MS = 10 * 60 * 1000;
     private static final int WALK_BACK_RANGE = 2;
-    private static final int[][] BESIDE = {
-        {1, 0}, {-1, 0}, {0, 1}, {0, -1},
-        {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
-    };
 
     private final BlockMinerModule module;
     /** False once the bot goes offline or a player takes over, which ends any errand under way. */
@@ -516,32 +512,41 @@ final class Bot {
         }
     }
 
-    /** Places an item beside the bot and waits for the block to appear. Returns where it went. */
+    /**
+     * Places an item beside the bot and waits for the block to appear, mining out a spot for it if there's
+     * nowhere ready. Returns where it went.
+     */
     int[] placeBeside(ItemData item) {
-        hold(item.id());
-        int[] feet = position();
-        for (int[] offset : BESIDE) {
-            int[] pos = {feet[0] + offset[0], feet[1], feet[2] + offset[1]};
-            if (!hasRoomAt(pos)) continue;
-            try {
-                run(() -> BARITONE.placeBlock(pos[0], pos[1], pos[2], item), ACTION_TIMEOUT_MS, "Placing " + item.name());
-                if (waitFor(() -> isBlock(pos, item.name()), ACTION_TIMEOUT_MS)) return pos;
-            } catch (ErrandFailed e) {
-                module.debug(e.getMessage());
-            }
-            BARITONE.stop();
-        }
-        throw ErrandFailed.noRoom("No room to place " + item.name() + " beside the bot");
+        closeContainer();
+        int[] pos = RoomBeside.placeBeside(position(), this::mineOutOfTheWay, spot -> tryToPlace(spot, item));
+        if (pos == null) throw ErrandFailed.noRoom("No room to place " + item.name() + " beside the bot");
+        return pos;
     }
 
-    /** Room to stand a container here, including the space above that a shulker box needs to open. */
-    private boolean hasRoomAt(int[] pos) {
-        var target = BlockStateInterface.getBlock(pos[0], pos[1], pos[2]);
-        var above = BlockStateInterface.getBlock(pos[0], pos[1] + 1, pos[2]);
-        var support = BlockStateInterface.getBlock(pos[0], pos[1] - 1, pos[2]);
-        return target != null && target.replaceable()
-            && above != null && above.replaceable()
-            && support != null && support.solidBlock();
+    private boolean mineOutOfTheWay(int[] block) {
+        try {
+            run(() -> BARITONE.breakBlock(block[0], block[1], block[2], true), BREAK_TIMEOUT_MS, "Mining to make room");
+        } catch (ErrandFailed e) {
+            module.warn("{} at {}", e.getMessage(), Arrays.toString(block));
+            BARITONE.stop();
+            return false;
+        }
+        if (waitFor(() -> RoomBeside.isClear(block), ACTION_TIMEOUT_MS)) return true;
+        module.warn("Mined {} to make room, but it's still not clear", Arrays.toString(block));
+        return false;
+    }
+
+    private boolean tryToPlace(int[] pos, ItemData item) {
+        hold(item.id());
+        try {
+            run(() -> BARITONE.placeBlock(pos[0], pos[1], pos[2], item), ACTION_TIMEOUT_MS, "Placing " + item.name());
+            if (waitFor(() -> isBlock(pos, item.name()), ACTION_TIMEOUT_MS)) return true;
+            module.warn("Placed {} at {}, but it never appeared", item.name(), Arrays.toString(pos));
+        } catch (ErrandFailed e) {
+            module.warn("{} at {}", e.getMessage(), Arrays.toString(pos));
+        }
+        BARITONE.stop();
+        return false;
     }
 
     /** Breaks a block the bot placed and collects what it drops. */
