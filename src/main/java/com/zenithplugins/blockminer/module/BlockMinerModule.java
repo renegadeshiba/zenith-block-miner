@@ -4,6 +4,8 @@ import com.github.rfresh2.EventConsumer;
 import com.zenith.discord.Embed;
 import com.zenith.event.client.ClientBotTick;
 import com.zenith.feature.pathfinder.PathingRequestFuture;
+import com.zenith.feature.pathfinder.goals.Goal;
+import com.zenith.feature.pathfinder.util.BlockOptionalMetaLookup;
 import com.zenith.mc.block.Block;
 import com.zenith.mc.block.BlockRegistry;
 import com.zenith.mc.item.ItemData;
@@ -16,12 +18,15 @@ import com.zenithplugins.blockminer.rules.TargetItems.ToolNeed;
 import com.zenithplugins.blockminer.rules.ToolRules;
 import org.jspecify.annotations.Nullable;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 import static com.github.rfresh2.EventConsumer.of;
 import static com.zenith.Globals.BARITONE;
 import static com.zenith.Globals.CONFIG;
+import static com.zenith.Globals.EXECUTOR;
 import static com.zenith.Globals.saveConfigAsync;
 import static com.zenithplugins.blockminer.BlockMinerPlugin.PLUGIN_CONFIG;
 
@@ -36,6 +41,11 @@ public class BlockMinerModule extends Module {
     private static final int MINING_ENDED_RETRY_TICKS = 20 * 5;
     // Mining that stops this soon after starting never found much to mine.
     private static final int NOTHING_FOUND_TICKS = 20 * 10;
+    // Zenith's miner searches every 2.5 seconds, so a change has to be caught well within that.
+    private static final int SEARCH_CHECK_INTERVAL_TICKS = 10;
+    // A check that takes a while waits this many times as long before the next, so it stays in the background.
+    private static final int SLOW_SEARCH_CHECK_BACKOFF = 20;
+    private static final int NANOS_PER_TICK = 50_000_000;
     private static final int FAILED_ERRAND_RETRY_TICKS = 20 * 30;
     private static final int MAX_FAILED_ERRANDS = 3;
     // While the bot is still building up target items, how often it stops to fill more slots with them.
@@ -65,6 +75,14 @@ public class BlockMinerModule extends Module {
     private volatile boolean reportedNothingFound;
     private boolean reportedBreakingOff;
     private boolean reportedNothingChosen;
+
+    // True while walking to the nearest blocks because Zenith's miner isn't safe to use from here.
+    private boolean walkingToBlocks;
+    private boolean reportedNoWayToBlocks;
+    private @Nullable BlockOptionalMetaLookup miningFilter;
+    private volatile boolean zenithSearchTooBig;
+    private volatile boolean searchCheckRunning;
+    private volatile long nextSearchCheckTick;
 
     @Override
     public List<EventConsumer<?>> registerEvents() {
@@ -117,7 +135,7 @@ public class BlockMinerModule extends Module {
         status = "Paused";
     }
 
-    private void handleTick(ClientBotTick event) {
+    void handleTick(ClientBotTick event) {
         tick++;
         if (errand != null) return;
         if (storage.isStuck()) {
@@ -148,9 +166,14 @@ public class BlockMinerModule extends Module {
     // ----------------------------------------------------------------------------------------
 
     private void keepMining() {
-        if (mining != null) {
-            if (!mining.isCompleted()) return;
-            miningEnded();
+        // A command on another thread can clear this at any moment.
+        PathingRequestFuture current = mining;
+        if (current != null) {
+            if (!current.isCompleted()) {
+                switchWayOfMiningIfNeeded();
+                return;
+            }
+            miningEnded(current.getNow());
         }
         if (tick < nextMineTick || BARITONE.isActive()) return;
 
@@ -190,13 +213,91 @@ public class BlockMinerModule extends Module {
             return;
         }
 
-        mining = BARITONE.mine(blocks);
-        miningStartedTick = tick;
-        status = "Mining";
+        startMining(blocks);
     }
 
-    private void miningEnded() {
+    /**
+     * Uses Zenith's miner wherever its search is safe to run, as it also explores when there's nothing
+     * nearby, picks up drops and gets out of lava. Otherwise walks to the nearest blocks instead, which
+     * mines them as it goes, until it is. See {@link BlockScan} for what goes wrong.
+     */
+    private void startMining(Block[] blocks) {
+        BlockOptionalMetaLookup filter = new BlockOptionalMetaLookup(blocks);
+        miningFilter = filter;
+        miningStartedTick = tick;
+        nextSearchCheckTick = tick + SEARCH_CHECK_INTERVAL_TICKS;
+        zenithSearchTooBig = !BlockScan.zenithSearchStaysSmall(filter);
+
+        if (!zenithSearchTooBig) {
+            walkingToBlocks = false;
+            reportedNoWayToBlocks = false;
+            mining = BARITONE.mine(blocks);
+            status = "Mining";
+            return;
+        }
+
+        String names = Arrays.stream(blocks).map(Block::name).collect(Collectors.joining(" or "));
+        if (!walkingToBlocks) {
+            info("There's too much {} in the loaded chunks for the pathfinder's own search to cope with from this"
+                + " height, so walking to the nearest first", names);
+        }
+        walkingToBlocks = true;
+        Goal goal = BlockScan.walkToNearest(filter);
+        if (goal == null) {
+            couldntGetToBlocks();
+            return;
+        }
+        mining = BARITONE.pathTo(goal);
+        status = "Walking to the nearest " + names;
+    }
+
+    /**
+     * What's safe changes as the bot moves, and Zenith's miner keeps searching for as long as it runs.
+     * Only the check is on another thread, because going through a rare block's chunks takes a while.
+     */
+    private void switchWayOfMiningIfNeeded() {
+        if (zenithSearchTooBig != walkingToBlocks) {
+            BARITONE.stop();
+            mining = null;
+            nextMineTick = 0;
+            return;
+        }
+        if (searchCheckRunning || tick < nextSearchCheckTick) return;
+
+        BlockOptionalMetaLookup filter = miningFilter;
+        searchCheckRunning = true;
+        EXECUTOR.execute(() -> {
+            long started = System.nanoTime();
+            try {
+                zenithSearchTooBig = !BlockScan.zenithSearchStaysSmall(filter);
+            } finally {
+                long tookTicks = (System.nanoTime() - started) / NANOS_PER_TICK;
+                nextSearchCheckTick = tick + Math.max(SEARCH_CHECK_INTERVAL_TICKS, tookTicks * SLOW_SEARCH_CHECK_BACKOFF);
+                searchCheckRunning = false;
+            }
+        });
+    }
+
+    private void couldntGetToBlocks() {
+        if (!reportedNoWayToBlocks) {
+            warn("Couldn't get to the nearest blocks to mine; trying again every {} seconds", MINING_ENDED_RETRY_TICKS / 20);
+        }
+        reportedNoWayToBlocks = true;
+        status = "Waiting: couldn't get to the nearest blocks to mine";
+        nextMineTick = tick + MINING_ENDED_RETRY_TICKS;
+    }
+
+    private void miningEnded(boolean succeeded) {
         mining = null;
+        if (walkingToBlocks) {
+            if (succeeded) {
+                reportedNoWayToBlocks = false;
+                nextMineTick = 0;
+            } else {
+                couldntGetToBlocks();
+            }
+            return;
+        }
         if (tick - miningStartedTick < NOTHING_FOUND_TICKS) {
             if (!reportedNothingFound) {
                 info("Nothing to mine in the loaded chunks; looking again every {} seconds", NOTHING_FOUND_RETRY_TICKS / 20);

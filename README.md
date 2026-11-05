@@ -109,9 +109,19 @@ an errand lets the errand finish first, so a shulker box isn't left on the groun
 ### Mining
 
 The bot mines the nearest block on its list in the loaded chunks, using ZenithProxy's pathfinder, which
-walks into each block it mines and so collects what drops. If there's nothing to mine, it looks again
-every 30 seconds, but it doesn't wander off to find more. The pathfinder's `allowBreak` setting has to be
-on.
+walks into each block it mines and so collects what drops. The pathfinder's `allowBreak` setting has to
+be on.
+
+If none are loaded, the pathfinder goes looking for more on its own: it digs down to Y -59 and tunnels
+away from where it started until some come into range. That's how ZenithProxy's miner works, so don't
+leave the bot mining somewhere it shouldn't dig.
+
+Blocks that are everywhere, such as deepslate, stone or netherrack, get extra care. ZenithProxy's search
+only stops early when it finds some within 10 blocks of the bot's height. Further away than that, it
+collects every one in the loaded chunks, which can be millions, and the whole proxy runs out of memory.
+So the bot checks first, and while that's a risk it walks to the nearest ones itself, mining them as it
+goes, then hands back to ZenithProxy's miner once it's among them. While it's doing that, the status says
+`Walking to the nearest ...`.
 
 ### Keeping junk out
 
