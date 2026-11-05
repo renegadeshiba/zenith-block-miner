@@ -23,9 +23,9 @@ public class BlockMinerConfig {
     public List<String> wantedItems = new ArrayList<>();
 
     /**
-     * Items taken off wantedItems that the bot may still be carrying. They could be on the junk list, so
-     * they get stored rather than thrown away until the bot has none left, or switching from cobbled
-     * deepslate to diamonds would throw away everything mined so far. Not meant to be hand-edited.
+     * Items taken off wantedItems that the bot may still be carrying. They get stored rather than thrown
+     * away until the bot has none left, or switching from cobbled deepslate to diamonds would throw away
+     * everything mined so far. Not meant to be hand-edited.
      */
     public List<String> stillToStore = new ArrayList<>();
 

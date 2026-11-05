@@ -531,7 +531,7 @@ final class Bot {
             }
             BARITONE.stop();
         }
-        throw ErrandFailed.retry("No room to place " + item.name() + " beside the bot");
+        throw ErrandFailed.noRoom("No room to place " + item.name() + " beside the bot");
     }
 
     /** Room to stand a container here, including the space above that a shulker box needs to open. */
@@ -668,12 +668,14 @@ final class Bot {
         openContainer(placeBeside(enderChest), "The ender chest");
     }
 
-    private int @Nullable [] nearestEnderChest() {
+    int @Nullable [] nearestEnderChest() {
         failedChests.values().removeIf(expiry -> expiry <= System.currentTimeMillis());
         int[] best = null;
         double bestDistance = Double.MAX_VALUE;
         for (int[] chest : BlockEntityScan.find(BlockEntityType.ENDER_CHEST)) {
             if (failedChests.containsKey(Arrays.toString(chest))) continue;
+            // It doesn't go below the lowest level for anything.
+            if (chest[1] < BlockScan.lowestLevel()) continue;
             if (!isBlock(chest, ItemRegistry.ENDER_CHEST.name())) continue;
             double distance = distanceTo(chest);
             if (distance < bestDistance) {

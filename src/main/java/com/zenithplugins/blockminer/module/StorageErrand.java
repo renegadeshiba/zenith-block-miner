@@ -3,6 +3,7 @@ package com.zenithplugins.blockminer.module;
 import com.zenith.mc.item.ItemData;
 import com.zenith.mc.item.ItemRegistry;
 import com.zenithplugins.blockminer.rules.InventoryPlan;
+import com.zenithplugins.blockminer.rules.InventoryPlan.SlotStack;
 import com.zenithplugins.blockminer.rules.StorageRules;
 import com.zenithplugins.blockminer.rules.TargetItems;
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
@@ -12,14 +13,15 @@ import java.util.List;
 import static com.zenithplugins.blockminer.BlockMinerPlugin.PLUGIN_CONFIG;
 
 /**
- * Empties the inventory into shulker boxes: crafts what it can into blocks, takes an empty shulker
- * box from the ender chest, fills it, and puts it back, until everything is stored. A stack of each
- * target item stays behind, ready to fill the inventory's empty slots again.
+ * Empties the inventory into shulker boxes: crafts what it can into blocks, takes a shulker box from
+ * the ender chest, fills it, and puts it back, until everything is stored. It tops up the ones it's
+ * started before taking an empty one. A stack of each target item stays behind, ready to fill the
+ * inventory's empty slots again.
  */
 final class StorageErrand {
 
-    // A full inventory fills two shulker boxes at most; this only stops a run that isn't getting anywhere.
-    private static final int MAX_SHULKERS_PER_RUN = 4;
+    // As many as an ender chest holds, since any number of them could be part-full with little room left.
+    private static final int MAX_SHULKERS_PER_RUN = 27;
     private static final int STACK_MOVE_TIMEOUT_MS = 3_000;
 
     private final BlockMinerModule module;
@@ -88,61 +90,66 @@ final class StorageErrand {
         for (int shulker = 0; shulker < MAX_SHULKERS_PER_RUN; shulker++) {
             if (slotsToStore().isEmpty()) return;
 
-            ItemData shulkerItem = takeEmptyShulker();
+            ItemData shulkerItem = takeShulkerToFill();
             int[] pos = bot.placeBeside(shulkerItem);
             bot.rememberPlacedShulker(pos);
             bot.openContainer(pos, "The shulker box");
-            boolean everythingFit = moveStorableItemsIntoOpenContainer();
+            moveStorableItemsIntoOpenContainer();
             space.breakAndPickUp(pos, shulkerItem);
             bot.forgetPlacedShulker();
             returnCarriedShulkers();
-            if (everythingFit) return;
         }
+        if (slotsToStore().isEmpty()) return;
         throw ErrandFailed.retry("Still had items to store after filling " + MAX_SHULKERS_PER_RUN + " shulker boxes");
     }
 
-    private ItemData takeEmptyShulker() {
+    private ItemData takeShulkerToFill() {
         bot.openEnderChest();
-        int emptyShulkerSlot = -1;
-        for (int slot : bot.containerSlots()) {
-            if (StorageRules.isEmptyShulker(bot.stackAt(slot))) {
-                emptyShulkerSlot = slot;
-                break;
-            }
-        }
-        if (emptyShulkerSlot == -1) {
+        List<ItemStack> storing = slotsToStore().stream().map(bot::stackAt).toList();
+        List<SlotStack> chest = bot.containerSlots().stream().map(slot -> new SlotStack(slot, bot.stackAt(slot))).toList();
+        int shulkerSlot = StorageRules.shulkerToFill(
+            chest, storing, InventoryPlan.itemsToStore(TargetItems.itemsFor(PLUGIN_CONFIG.wantedItems), PLUGIN_CONFIG.stillToStore));
+        if (shulkerSlot == -1) {
             bot.closeContainer();
-            throw ErrandFailed.stop("The ender chest has no empty shulker boxes left");
+            throw ErrandFailed.stop("The ender chest has no shulker boxes with room left");
         }
 
         space.ensureFreeSlot();
-        ItemData shulkerItem = ItemRegistry.REGISTRY.get(bot.stackAt(emptyShulkerSlot).getId());
+        ItemData shulkerItem = ItemRegistry.REGISTRY.get(bot.stackAt(shulkerSlot).getId());
         int carriedBefore = carriedShulkers();
-        if (!bot.shiftClick(emptyShulkerSlot)
+        if (!bot.shiftClick(shulkerSlot)
             || !bot.waitFor(() -> carriedShulkers() > carriedBefore, Bot.ACTION_TIMEOUT_MS)) {
             bot.closeContainer();
-            throw ErrandFailed.retry("Couldn't take an empty shulker box out of the ender chest");
+            throw ErrandFailed.retry("Couldn't take a shulker box out of the ender chest");
         }
         bot.closeContainer();
         return shulkerItem;
     }
 
     /**
-     * Returns true if everything went in, or false if the shulker box filled up first and the rest
-     * needs another one. Anything picked up while this runs just waits for the next trip.
+     * Moves in as much as fits. A stack that doesn't fit stays for the next shulker box, as a part-full one
+     * can have room for one thing and not another. Anything picked up while this runs just waits for the
+     * next trip.
      */
-    private boolean moveStorableItemsIntoOpenContainer() {
+    void moveStorableItemsIntoOpenContainer() {
         int moved = 0;
         for (int slot : slotsToStore()) {
-            int amountBefore = bot.stackAt(slot).getAmount();
-            if (!bot.shiftClick(slot) || !bot.waitFor(() -> amountAt(slot) < amountBefore, STACK_MOVE_TIMEOUT_MS)) {
-                if (moved == 0) throw ErrandFailed.retry("Couldn't move anything into the shulker box");
-                return false;
-            }
+            ItemStack stack = bot.stackAt(slot);
+            if (!StorageRules.hasRoomFor(openContainerContents(), stack)) continue;
+
+            int amountBefore = stack.getAmount();
+            if (!bot.shiftClick(slot) || !bot.waitFor(() -> amountAt(slot) < amountBefore, STACK_MOVE_TIMEOUT_MS)) break;
             moved++;
             bot.sleep(Bot.CLICK_PACING_MS);
         }
-        return true;
+        if (moved == 0) throw ErrandFailed.retry("Couldn't move anything into the shulker box");
+    }
+
+    private List<ItemStack> openContainerContents() {
+        return bot.containerSlots().stream()
+            .map(bot::stackAt)
+            .filter(stack -> stack != null && stack.getAmount() > 0)
+            .toList();
     }
 
     private int amountAt(int slot) {

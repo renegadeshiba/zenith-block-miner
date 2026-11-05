@@ -55,28 +55,57 @@ class InventoryPlanTest {
     // ------------------------------------------------------------------------------------------
 
     @Test
-    void whatIsntKnownToBeJunkGetsStoredAndGearDoesNot() {
+    void onlyWhatYouAskedForGetsStored() {
         List<SlotStack> inventory = all(
-            stacks(0, ItemRegistry.BONE, 64),
-            all(stacks(1, ItemRegistry.NETHERITE_PICKAXE, 1), stacks(2, ItemRegistry.ENDER_CHEST, 3))
+            stacks(0, ItemRegistry.DIAMOND, 64, 64),
+            all(stacks(2, ItemRegistry.BONE, 64), stacks(3, ItemRegistry.COAL, 64))
         );
-        assertEquals(List.of(0), toStore(inventory, DIAMONDS, true));
+        assertEquals(1, toStore(inventory, DIAMONDS, false).size());
+        assertTrue(List.of(0, 1).containsAll(toStore(inventory, DIAMONDS, false)), "only the diamonds");
     }
 
     @Test
-    void knownJunkIsNotStoredBecauseItGetsThrownAway() {
-        List<SlotStack> inventory = all(stacks(0, ItemRegistry.ANDESITE, 64), stacks(1, ItemRegistry.TUFF, 12));
-        assertTrue(toStore(inventory, DIAMONDS, true).isEmpty());
-        assertEquals(List.of(0, 1), toThrow(inventory, DIAMONDS));
-    }
-
-    @Test
-    void onlyKnownJunkIsThrownAway() {
+    void anythingElseIsThrownAwayHoweverValuableItLooks() {
         List<SlotStack> inventory = all(
             stacks(0, ItemRegistry.TUFF, 12),
             all(stacks(1, ItemRegistry.BONE, 64), stacks(2, ItemRegistry.EMERALD, 3))
         );
+        assertTrue(toStore(inventory, DIAMONDS, true).isEmpty());
+        assertEquals(List.of(0, 1, 2), toThrow(inventory, DIAMONDS));
+    }
+
+    @Test
+    void whatItsTargetCraftsIntoGetsStoredAllTheWayUp() {
+        Set<String> nuggets = Set.of("gold_nugget");
+        List<SlotStack> inventory = all(stacks(0, ItemRegistry.GOLD_INGOT, 5), stacks(1, ItemRegistry.GOLD_BLOCK, 3));
+
+        assertEquals(List.of(0, 1), toStore(inventory, nuggets, true));
+        assertTrue(toThrow(inventory, nuggets).isEmpty());
+    }
+
+    @Test
+    void whatSomethingElseCraftsIntoIsJunk() {
+        List<SlotStack> inventory = stacks(0, ItemRegistry.EMERALD_BLOCK, 3);
+
+        assertTrue(toStore(inventory, DIAMONDS, true).isEmpty());
         assertEquals(List.of(0), toThrow(inventory, DIAMONDS));
+    }
+
+    @Test
+    void whatsAllowedInAShulkerBoxIsWhatYouAskedForAndWhatItCraftsInto() {
+        assertEquals(
+            Set.of("gold_nugget", "gold_ingot", "gold_block", "cobbled_deepslate"),
+            InventoryPlan.itemsToStore(Set.of("gold_nugget"), List.of("cobbled_deepslate")));
+        assertEquals(
+            Set.of("cobbled_deepslate"),
+            InventoryPlan.itemsToStore(Set.of("cobbled_deepslate"), List.of()));
+    }
+
+    @Test
+    void foodAndShulkerBoxesAreNeverThrownAway() {
+        List<SlotStack> inventory = all(stacks(0, ItemRegistry.GOLDEN_CARROT, 64), stacks(1, ItemRegistry.SHULKER_BOX, 1));
+        assertTrue(toThrow(inventory, DIAMONDS).isEmpty());
+        assertTrue(toStore(inventory, DIAMONDS, false).isEmpty());
     }
 
     @Test
@@ -163,11 +192,21 @@ class InventoryPlanTest {
     }
 
     @Test
-    void extraStacksOfABridgingBlockThatIsntJunkGetStored() {
+    void extraStacksOfABridgingBlockAreThrownAwayRatherThanStored() {
         Set<String> bridging = Set.of("obsidian");
         List<SlotStack> inventory = stacks(0, ItemRegistry.OBSIDIAN, 20, 64);
-        assertEquals(List.of(0), InventoryPlan.slotsToStore(inventory, DIAMONDS, KEEP, bridging, false, List.of()));
-        assertTrue(InventoryPlan.slotsToThrowAway(inventory, DIAMONDS, KEEP, bridging, List.of()).isEmpty());
+        assertTrue(InventoryPlan.slotsToStore(inventory, DIAMONDS, KEEP, bridging, false, List.of()).isEmpty());
+        assertEquals(List.of(0), InventoryPlan.slotsToThrowAway(inventory, DIAMONDS, KEEP, bridging, List.of()));
+    }
+
+    @Test
+    void extraStacksOfABridgingBlockTakenOffTheListAreStillStored() {
+        Set<String> bridging = Set.of("stone");
+        List<String> spared = List.of("stone");
+        List<SlotStack> inventory = stacks(0, ItemRegistry.STONE, 20, 64);
+
+        assertEquals(List.of(0), InventoryPlan.slotsToStore(inventory, DIAMONDS, KEEP, bridging, false, spared));
+        assertTrue(InventoryPlan.slotsToThrowAway(inventory, DIAMONDS, KEEP, bridging, spared).isEmpty());
     }
 
     /** Otherwise everything counts as junk, and a bot that's been given nothing to do empties itself. */

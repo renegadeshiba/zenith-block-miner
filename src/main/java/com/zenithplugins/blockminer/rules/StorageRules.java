@@ -3,6 +3,7 @@ package com.zenithplugins.blockminer.rules;
 import com.zenith.mc.item.ItemData;
 import com.zenith.mc.item.ItemRegistry;
 import com.zenith.util.ItemUtil;
+import com.zenithplugins.blockminer.rules.InventoryPlan.SlotStack;
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponentTypes;
 import org.jspecify.annotations.Nullable;
@@ -15,23 +16,9 @@ import java.util.Set;
 /** What counts as a shulker box, what's inside one, and what can be stored at all. */
 public final class StorageRules {
 
-    /**
-     * What mining turns up that nobody wants, which gets thrown away rather than stored. Anything not
-     * on this list gets stored, since there's no telling whether it matters. An item the user asked
-     * for, or put on the keep list, is never treated as junk.
-     */
-    private static final Set<String> KNOWN_JUNK = Set.of(
-        "cobblestone", "stone", "cobbled_deepslate", "deepslate", "tuff", "andesite", "diorite", "granite",
-        "calcite", "dripstone_block", "pointed_dripstone", "gravel", "flint", "dirt", "coarse_dirt", "sand",
-        "red_sand", "sandstone", "red_sandstone", "netherrack", "blackstone", "basalt", "smooth_basalt",
-        "soul_sand", "soul_soil", "magma_block", "end_stone"
-    );
+    private static final int SHULKER_SLOTS = 27;
 
     private StorageRules() {
-    }
-
-    public static boolean isKnownJunk(String itemName) {
-        return KNOWN_JUNK.contains(itemName);
     }
 
     public static boolean isShulkerName(String itemName) {
@@ -57,6 +44,52 @@ public final class StorageRules {
 
     public static boolean isEmptyShulker(@Nullable ItemStack stack) {
         return isShulker(stack) && contents(stack).isEmpty();
+    }
+
+    /** True if some of this stack would fit alongside these, in an empty slot or topping up a matching stack. */
+    public static boolean hasRoomFor(List<ItemStack> contents, ItemStack stack) {
+        if (contents.size() < SHULKER_SLOTS) return true;
+        ItemData item = ItemRegistry.REGISTRY.get(stack.getId());
+        if (item == null) return false;
+        for (ItemStack inside : contents) {
+            if (inside.getId() == stack.getId() && inside.getAmount() < item.stackSize()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * The shulker box in the ender chest to fill next, or -1 if there's none. One it's already started
+     * comes first, fullest first, so that it doesn't leave a trail of part-full ones behind it. A box only
+     * counts as started if it holds nothing but {@code ownItems}, which keeps it out of anything else
+     * stored in there, like a tool shulker box, and has room for something in {@code storing}.
+     */
+    public static int shulkerToFill(List<SlotStack> chest, List<ItemStack> storing, Set<String> ownItems) {
+        int fullestStarted = -1;
+        int mostItems = -1;
+        int firstEmpty = -1;
+        for (SlotStack entry : chest) {
+            if (isEmptyShulker(entry.stack())) {
+                if (firstEmpty == -1) firstEmpty = entry.slot();
+            } else if (isShulker(entry.stack())) {
+                List<ItemStack> contents = contents(entry.stack());
+                if (!holdsOnly(contents, ownItems)) continue;
+                if (storing.stream().noneMatch(stack -> hasRoomFor(contents, stack))) continue;
+                int items = contents.stream().mapToInt(ItemStack::getAmount).sum();
+                if (items > mostItems) {
+                    mostItems = items;
+                    fullestStarted = entry.slot();
+                }
+            }
+        }
+        return fullestStarted != -1 ? fullestStarted : firstEmpty;
+    }
+
+    private static boolean holdsOnly(List<ItemStack> contents, Set<String> itemNames) {
+        for (ItemStack stack : contents) {
+            ItemData item = ItemRegistry.REGISTRY.get(stack.getId());
+            if (item == null || !itemNames.contains(item.name())) return false;
+        }
+        return true;
     }
 
     /**

@@ -1,6 +1,9 @@
 package com.zenithplugins.blockminer.rules;
 
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /** Mined items that craft into a block from 9 of themselves, and back again, so nothing is lost. */
 public final class CompactRecipes {
@@ -33,6 +36,15 @@ public final class CompactRecipes {
 
     public static boolean isInput(String itemName) {
         return ALL.stream().anyMatch(recipe -> recipe.input().equals(itemName));
+    }
+
+    /** What these items craft into, all the way up: gold nuggets into ingots, and those into blocks. */
+    public static Set<String> craftedFrom(Collection<String> items) {
+        Set<String> crafted = new HashSet<>();
+        for (Recipe recipe : ALL) {
+            if (items.contains(recipe.input()) || crafted.contains(recipe.input())) crafted.add(recipe.output());
+        }
+        return crafted;
     }
 
     /**

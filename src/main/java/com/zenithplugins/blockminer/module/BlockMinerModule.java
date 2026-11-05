@@ -4,9 +4,10 @@ import com.github.rfresh2.EventConsumer;
 import com.zenith.discord.Embed;
 import com.zenith.event.client.ClientBotTick;
 import com.zenith.feature.pathfinder.PathingRequestFuture;
-import com.zenith.feature.pathfinder.goals.Goal;
+import com.zenith.feature.pathfinder.goals.GoalY;
 import com.zenith.feature.pathfinder.util.BlockOptionalMetaLookup;
 import com.zenith.mc.block.Block;
+import com.zenith.mc.block.BlockPos;
 import com.zenith.mc.block.BlockRegistry;
 import com.zenith.mc.item.ItemData;
 import com.zenith.mc.item.ItemRegistry;
@@ -19,33 +20,35 @@ import com.zenithplugins.blockminer.rules.ToolRules;
 import org.jspecify.annotations.Nullable;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.github.rfresh2.EventConsumer.of;
 import static com.zenith.Globals.BARITONE;
 import static com.zenith.Globals.CONFIG;
-import static com.zenith.Globals.EXECUTOR;
 import static com.zenith.Globals.saveConfigAsync;
 import static com.zenithplugins.blockminer.BlockMinerPlugin.PLUGIN_CONFIG;
 
 /**
- * Keeps the pathfinder mining for the chosen items, and sends the bot on an errand when the inventory
- * fills up or the tool in hand is nearly broken. Errands run on their own thread (see {@link Bot}),
- * while this module only watches and decides from the client tick.
+ * Keeps the bot mining for the chosen items, one pathfinder goal at a time (see {@link BlockScan}), and
+ * sends it on an errand when the inventory fills up or the tool in hand is nearly broken. Errands run on
+ * their own thread (see {@link Bot}), while this module only watches and decides from the client tick.
  */
 public class BlockMinerModule extends Module {
 
-    private static final int NOTHING_FOUND_RETRY_TICKS = 20 * 30;
-    private static final int MINING_ENDED_RETRY_TICKS = 20 * 5;
-    // Mining that stops this soon after starting never found much to mine.
-    private static final int NOTHING_FOUND_TICKS = 20 * 10;
-    // Zenith's miner searches every 2.5 seconds, so a change has to be caught well within that.
-    private static final int SEARCH_CHECK_INTERVAL_TICKS = 10;
-    // A check that takes a while waits this many times as long before the next, so it stays in the background.
-    private static final int SLOW_SEARCH_CHECK_BACKOFF = 20;
-    private static final int NANOS_PER_TICK = 50_000_000;
+    // The pathfinder won't search again any sooner than this after failing to find a path.
+    private static final int NO_PATH_RETRY_TICKS = 20;
+    private static final int NO_PATH_TRIES = 3;
+    // Blocks it couldn't get to might be fine from somewhere else, once it's moved on.
+    private static final int OUT_OF_REACH_MEMORY_TICKS = 20 * 60 * 5;
+    // Enough to be clear of what it was stuck in, and it mines on from there.
+    private static final int CLIMB_BLOCKS = 6;
+    private static final int MAX_TIMES_STUCK = 3;
+    // Getting stuck again after this long isn't part of the same problem.
+    private static final int STUCK_MEMORY_TICKS = 20 * 60 * 5;
     private static final int FAILED_ERRAND_RETRY_TICKS = 20 * 30;
     private static final int MAX_FAILED_ERRANDS = 3;
     // While the bot is still building up target items, how often it stops to fill more slots with them.
@@ -58,6 +61,7 @@ public class BlockMinerModule extends Module {
     private final CraftingErrand crafting = new CraftingErrand(this, bot, space);
     private final StorageErrand storage = new StorageErrand(this, bot, space, crafting);
     private final ToolSwapErrand toolSwap = new ToolSwapErrand(this, bot, space, storage);
+    private final ClimbingBlocks climbingBlocks = new ClimbingBlocks(bot);
 
     private volatile @Nullable Thread errand;
     private volatile String status = "Off";
@@ -70,19 +74,23 @@ public class BlockMinerModule extends Module {
     private volatile long nextToolCheckTick;
 
     private volatile @Nullable PathingRequestFuture mining;
-    private long miningStartedTick;
     private volatile long nextMineTick;
-    private volatile boolean reportedNothingFound;
     private boolean reportedBreakingOff;
     private boolean reportedNothingChosen;
 
-    // True while walking to the nearest blocks because Zenith's miner isn't safe to use from here.
-    private boolean walkingToBlocks;
-    private boolean reportedNoWayToBlocks;
-    private @Nullable BlockOptionalMetaLookup miningFilter;
-    private volatile boolean zenithSearchTooBig;
-    private volatile boolean searchCheckRunning;
-    private volatile long nextSearchCheckTick;
+    private BlockScan.@Nullable MiningArea miningArea;
+    // Null while exploring, when there's nothing to go for.
+    private BlockScan.@Nullable MiningGoal currentGoal;
+    private int exploringDirection;
+    private boolean reportedExploring;
+    private final Set<BlockPos> outOfReach = new HashSet<>();
+    private long lastOutOfReachTick;
+    private int noPathsInARow;
+
+    private volatile boolean climbingOut;
+    private volatile boolean roomNeeded;
+    private int timesStuck;
+    private long lastStuckTick;
 
     @Override
     public List<EventConsumer<?>> registerEvents() {
@@ -105,7 +113,10 @@ public class BlockMinerModule extends Module {
         nextFillTick = 0;
         nextMineTick = 0;
         nextToolCheckTick = 0;
-        reportedNothingFound = false;
+        noPathsInARow = 0;
+        timesStuck = 0;
+        roomNeeded = false;
+        forgetWhereItWasMining();
         status = "Starting";
     }
 
@@ -125,6 +136,8 @@ public class BlockMinerModule extends Module {
 
     private void handleStarting(ClientBotTick.Starting event) {
         mining = null;
+        stopClimbing();
+        forgetWhereItWasMining();
         // The world and inventory are still arriving, so what the bot sees isn't to be trusted yet.
         nextMineTick = tick + STARTUP_WAIT_TICKS;
         nextErrandTick = tick + STARTUP_WAIT_TICKS;
@@ -132,6 +145,7 @@ public class BlockMinerModule extends Module {
 
     private void handleStopped(ClientBotTick.Stopped event) {
         mining = null;
+        stopClimbing();
         status = "Paused";
     }
 
@@ -143,7 +157,17 @@ public class BlockMinerModule extends Module {
                 + " what it's mining. Make room, or check the keep list with `blockminer`");
             return;
         }
-        if (needsErrand()) {
+        if (roomNeeded) {
+            // An errand had nowhere to put something down, and won't until the bot is somewhere else.
+            // If it can't climb, the errand tries again a few times and then says what's wrong.
+            roomNeeded = false;
+            stopMining();
+            if (climbingBlocks.allow()) startClimbingOut("Climbing to find room for its errand");
+        }
+        // Getting out comes first, as nothing else can get done from where it's stuck.
+        if (climbingOut) {
+            keepMining();
+        } else if (needsErrand()) {
             // Waiting out a failed errand still means not mining: the next few blocks could be the
             // ones that break the tool.
             stopMining();
@@ -156,9 +180,15 @@ public class BlockMinerModule extends Module {
     /** Mining carries on with the blocks it started with, so a change to the list needs a restart. */
     public void blocksChanged() {
         stopMining();
+        forgetWhereItWasMining();
         nextMineTick = 0;
         nextToolCheckTick = 0;
-        reportedNothingFound = false;
+    }
+
+    private void forgetWhereItWasMining() {
+        miningArea = null;
+        outOfReach.clear();
+        reportedExploring = false;
     }
 
     // ----------------------------------------------------------------------------------------
@@ -169,13 +199,16 @@ public class BlockMinerModule extends Module {
         // A command on another thread can clear this at any moment.
         PathingRequestFuture current = mining;
         if (current != null) {
-            if (!current.isCompleted()) {
-                switchWayOfMiningIfNeeded();
-                return;
-            }
+            if (!current.isCompleted()) return;
             miningEnded(current.getNow());
         }
-        if (tick < nextMineTick || BARITONE.isActive()) return;
+        // Finding out why it ended can turn the module off.
+        if (!PLUGIN_CONFIG.enabled || tick < nextMineTick || BARITONE.isActive()) return;
+
+        if (climbingOut) {
+            mining = BARITONE.pathTo(new GoalY(bot.position()[1] + CLIMB_BLOCKS));
+            return;
+        }
 
         if (!CONFIG.client.extra.pathfinder.allowBreak) {
             if (!reportedBreakingOff) warn("The pathfinder's allowBreak setting is off, so the bot can't mine");
@@ -216,104 +249,108 @@ public class BlockMinerModule extends Module {
         startMining(blocks);
     }
 
-    /**
-     * Uses Zenith's miner wherever its search is safe to run, as it also explores when there's nothing
-     * nearby, picks up drops and gets out of lava. Otherwise walks to the nearest blocks instead, which
-     * mines them as it goes, until it is. See {@link BlockScan} for what goes wrong.
-     */
+    /** Sends the pathfinder after the next block, or further off if there's nothing to go for yet. */
     private void startMining(Block[] blocks) {
-        BlockOptionalMetaLookup filter = new BlockOptionalMetaLookup(blocks);
-        miningFilter = filter;
-        miningStartedTick = tick;
-        nextSearchCheckTick = tick + SEARCH_CHECK_INTERVAL_TICKS;
-        zenithSearchTooBig = !BlockScan.zenithSearchStaysSmall(filter);
-
-        if (!zenithSearchTooBig) {
-            walkingToBlocks = false;
-            reportedNoWayToBlocks = false;
-            mining = BARITONE.mine(blocks);
-            status = "Mining";
-            return;
+        int[] position = bot.position();
+        if (miningArea == null || miningArea.isFarFrom(position[0], position[2])) {
+            miningArea = new BlockScan.MiningArea(position[0], position[2], BlockScan.MINING_AREA_RADIUS);
         }
+        if (tick - lastOutOfReachTick > OUT_OF_REACH_MEMORY_TICKS) outOfReach.clear();
 
         String names = Arrays.stream(blocks).map(Block::name).collect(Collectors.joining(" or "));
-        if (!walkingToBlocks) {
-            info("There's too much {} in the loaded chunks for the pathfinder's own search to cope with from this"
-                + " height, so walking to the nearest first", names);
-        }
-        walkingToBlocks = true;
-        Goal goal = BlockScan.walkToNearest(filter);
-        if (goal == null) {
-            couldntGetToBlocks();
+        currentGoal = BlockScan.miningGoal(new BlockOptionalMetaLookup(blocks), miningArea, outOfReach);
+        if (currentGoal == null) {
+            if (!reportedExploring) info("None of {} in the loaded chunks, so going to look for some", names);
+            reportedExploring = true;
+            miningArea = null;
+            mining = BARITONE.pathTo(BlockScan.exploringGoal(exploringDirection));
+            status = "Looking for " + names + ", as there's none in the loaded chunks";
             return;
         }
-        mining = BARITONE.pathTo(goal);
-        status = "Walking to the nearest " + names;
+        reportedExploring = false;
+        // Wherever it ends up is where it carries on from.
+        if (currentGoal.leavesArea()) miningArea = null;
+        mining = BARITONE.pathTo(currentGoal.goal());
+        status = currentGoal.onBotsLevel() ? "Mining" : "Walking to the nearest " + names;
     }
 
-    /**
-     * What's safe changes as the bot moves, and Zenith's miner keeps searching for as long as it runs.
-     * Only the check is on another thread, because going through a rare block's chunks takes a while.
-     */
-    private void switchWayOfMiningIfNeeded() {
-        if (zenithSearchTooBig != walkingToBlocks) {
-            BARITONE.stop();
-            mining = null;
-            nextMineTick = 0;
+    private void noPathFound() {
+        noPathsInARow++;
+        if (noPathsInARow >= NO_PATH_TRIES) {
+            noPathsInARow = 0;
+            gotStuck();
             return;
         }
-        if (searchCheckRunning || tick < nextSearchCheckTick) return;
-
-        BlockOptionalMetaLookup filter = miningFilter;
-        searchCheckRunning = true;
-        EXECUTOR.execute(() -> {
-            long started = System.nanoTime();
-            try {
-                zenithSearchTooBig = !BlockScan.zenithSearchStaysSmall(filter);
-            } finally {
-                long tookTicks = (System.nanoTime() - started) / NANOS_PER_TICK;
-                nextSearchCheckTick = tick + Math.max(SEARCH_CHECK_INTERVAL_TICKS, tookTicks * SLOW_SEARCH_CHECK_BACKOFF);
-                searchCheckRunning = false;
-            }
-        });
+        status = "Waiting: can't find a way to anything it can mine from here";
+        nextMineTick = tick + NO_PATH_RETRY_TICKS;
     }
 
-    private void couldntGetToBlocks() {
-        if (!reportedNoWayToBlocks) {
-            warn("Couldn't get to the nearest blocks to mine; trying again every {} seconds", MINING_ENDED_RETRY_TICKS / 20);
+    /** It can't get to anything from here, so it builds its way out if it can, and asks for help if not. */
+    private void gotStuck() {
+        String where = whereTheBotIs();
+        timesStuck = tick - lastStuckTick > STUCK_MEMORY_TICKS ? 1 : timesStuck + 1;
+        lastStuckTick = tick;
+        stopMining();
+        if (timesStuck > MAX_TIMES_STUCK) {
+            stopAndNotify("It keeps getting stuck, most recently at " + where + ", so it needs moving somewhere else");
+        } else if (!climbingBlocks.allow()) {
+            stopAndNotify("It's stuck at " + where + ", with no way to dig to anything it can mine, and no blocks"
+                + " that it can climb out with. Give it some, or get it out");
+        } else {
+            warn("Stuck at {}, so building its way out", where);
+            startClimbingOut("Climbing out from " + where);
         }
-        reportedNoWayToBlocks = true;
-        status = "Waiting: couldn't get to the nearest blocks to mine";
-        nextMineTick = tick + MINING_ENDED_RETRY_TICKS;
+    }
+
+    private void startClimbingOut(String reason) {
+        climbingOut = true;
+        nextMineTick = 0;
+        status = reason;
+    }
+
+    private void stopClimbing() {
+        climbingOut = false;
+        climbingBlocks.stopAllowing();
+    }
+
+    private String whereTheBotIs() {
+        int[] position = bot.position();
+        return "[" + position[0] + ", " + position[1] + ", " + position[2] + "]";
     }
 
     private void miningEnded(boolean succeeded) {
         mining = null;
-        if (walkingToBlocks) {
+        if (climbingOut) {
+            stopClimbing();
             if (succeeded) {
-                reportedNoWayToBlocks = false;
+                noPathsInARow = 0;
+                // Nothing that was out of reach from where it was stuck has to be from here.
+                outOfReach.clear();
                 nextMineTick = 0;
             } else {
-                couldntGetToBlocks();
+                stopAndNotify("It's stuck at " + whereTheBotIs() + ", and even with blocks to build with it couldn't"
+                    + " find a way out. Get it out");
             }
             return;
         }
-        if (tick - miningStartedTick < NOTHING_FOUND_TICKS) {
-            if (!reportedNothingFound) {
-                info("Nothing to mine in the loaded chunks; looking again every {} seconds", NOTHING_FOUND_RETRY_TICKS / 20);
-            }
-            reportedNothingFound = true;
-            status = "Waiting: nothing to mine in the loaded chunks";
-            nextMineTick = tick + NOTHING_FOUND_RETRY_TICKS;
-        } else {
-            reportedNothingFound = false;
-            nextMineTick = tick + MINING_ENDED_RETRY_TICKS;
+        if (succeeded) {
+            noPathsInARow = 0;
+            nextMineTick = 0;
+            return;
         }
+        if (currentGoal != null) {
+            outOfReach.addAll(currentGoal.blocks());
+            lastOutOfReachTick = tick;
+        } else {
+            exploringDirection++;
+        }
+        noPathFound();
     }
 
     private void stopMining() {
         if (mining != null) BARITONE.stop();
         mining = null;
+        stopClimbing();
     }
 
     // ----------------------------------------------------------------------------------------
@@ -393,6 +430,7 @@ public class BlockMinerModule extends Module {
         } catch (ErrandFailed e) {
             if (e.worthRetrying()) {
                 errandFailed(e.getMessage());
+                roomNeeded = e.needsRoom();
             } else {
                 stopAndNotify(e.getMessage());
             }

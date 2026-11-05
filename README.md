@@ -41,6 +41,9 @@ Before turning it on:
   in the ender chest.
 - Run it well away from wardens, with nothing valuable on the bot for now. See
   [Things to know](#things-to-know).
+- Start it somewhere it's fine to dig, as it digs from where it's standing.
+- Put anything else it should hold on to on the keep list, with `blockminer keep add <item>`. Apart from
+  gear, food and shulker boxes, **whatever it's carrying that you haven't asked for gets thrown away**.
 
 Then say what you want and turn it on:
 
@@ -108,20 +111,32 @@ an errand lets the errand finish first, so a shulker box isn't left on the groun
 
 ### Mining
 
-The bot mines the nearest block on its list in the loaded chunks, using ZenithProxy's pathfinder, which
-walks into each block it mines and so collects what drops. The pathfinder's `allowBreak` setting has to
-be on.
+**The bot never goes below Y -50**, whatever it's after, which keeps it clear of bedrock and the lava
+lakes. That's 14 blocks above the bottom of the world, so it's Y 14 in the Nether. If it starts lower than
+that, it climbs up first. Blocks below that are left alone, and so is an ender chest down there.
 
-If none are loaded, the pathfinder goes looking for more on its own: it digs down to Y -59 and tunnels
-away from where it started until some come into range. That's how ZenithProxy's miner works, so don't
-leave the bot mining somewhere it shouldn't dig.
+It walks into each block it mines and so collects what drops, and the pathfinder's `allowBreak` setting has
+to be on. It decides where to go itself rather than using ZenithProxy's own miner, which can't be told to
+stay above a height. Left alone, that digs straight down until it's stuck in the bedrock, explores at Y -59,
+and with a block that's everywhere, its search can run the whole proxy out of memory.
 
-Blocks that are everywhere, such as deepslate, stone or netherrack, get extra care. ZenithProxy's search
-only stops early when it finds some within 10 blocks of the bot's height. Further away than that, it
-collects every one in the loaded chunks, which can be millions, and the whole proxy runs out of memory.
-So the bot checks first, and while that's a risk it walks to the nearest ones itself, mining them as it
-goes, then hands back to ZenithProxy's miner once it's among them. While it's doing that, the status says
-`Walking to the nearest ...`.
+What it does next depends on how much of what you asked for is around it, which it keeps checking as it
+moves. A block counts as everywhere if there are 256 or more within 16 blocks of the bot.
+
+**Blocks that are everywhere**, such as deepslate, stone or netherrack:
+
+1. It mines outwards on one flat level, breaking the blocks at its feet and head.
+2. It stays within 24 blocks of where it started, so that it can keep using the same ender chest.
+3. Once that level is used up in that area, it goes down two levels and carries on.
+4. Once the area is used up all the way down to Y -50, it moves on and starts a new area next to it.
+
+If it starts above the blocks it's after, it digs down from where it's standing until most of what's around
+it is what it wants, and the status says `Walking to the nearest ...` until then.
+
+**Blocks worth looking for**, such as ores, aren't kept to an area, since there wouldn't be many in it. It
+goes for the nearest ones in the loaded chunks, wherever they are. If none are loaded, it goes looking for
+more, heading off in a straight line until some come into range, and the status says `Looking for ...`.
+So don't leave the bot mining somewhere it shouldn't dig.
 
 ### Keeping junk out
 
@@ -144,19 +159,19 @@ Turn filling off with `blockminer fill off`.
 
 ### Throwing junk away
 
-Junk that does get in is thrown on the ground, not stored, so it doesn't take up space in your shulker
-boxes. Dropped items disappear after about 5 minutes. This is what counts as junk:
+**Only what you asked for goes in your shulker boxes**, along with what that crafts into, such as diamond
+blocks when you asked for diamonds. Everything else that gets in the inventory is junk, and gets thrown on
+the ground, where it disappears after about 5 minutes.
 
-`cobblestone`, `stone`, `cobbled_deepslate`, `deepslate`, `tuff`, `andesite`, `diorite`, `granite`, `calcite`,
-`dripstone_block`, `pointed_dripstone`, `gravel`, `flint`, `dirt`, `coarse_dirt`, `sand`, `red_sand`,
-`sandstone`, `red_sandstone`, `netherrack`, `blackstone`, `basalt`, `smooth_basalt`, `soul_sand`, `soul_soil`,
-`magma_block`, `end_stone`
+That includes anything valuable it happens to dig through: if you only asked for `cobbled_deepslate`, a
+diamond is junk. To hold on to something, ask for it too, or put it on the keep list with
+`blockminer keep add <item>`.
 
-It never throws away anything else, so an item not on that list gets stored instead. It also won't throw
-away:
+It won't throw away:
 
-- an item you've asked for, so `blockminer add cobblestone` means cobblestone isn't junk any more
-- anything on the keep list, so use `blockminer keep add <item>` to hold on to one of them
+- an item you've asked for, or what that crafts into
+- gear, meaning anything with durability, or food, or shulker boxes
+- anything on the keep list
 - the one stack it holds back for the pathfinder to bridge with
 - an item you've just removed from your list, while it's still carrying some, so switching from
   `cobbled_deepslate` to `diamond` stores what it's mined instead of throwing it away
@@ -174,11 +189,15 @@ of its target item, across all of its stacks. Change that with `blockminer room 
 time, the bot:
 
 1. Merges two partly full stacks to free up a slot, then crafts items into blocks, if crafting is on.
-2. Takes an empty shulker box from the ender chest.
+2. Takes a shulker box from the ender chest: one it's already started if it can, or else an empty one.
 3. Places it beside itself and fills it with what it's carrying.
 4. Breaks it, picks it back up, and puts it back in the ender chest.
 5. Repeats with another shulker box if there's more to store.
 6. Fills the empty slots with its target item again, then walks back and carries on mining.
+
+A shulker box counts as started if it still has room and everything in it is what you asked for or what
+that crafts into. The fullest goes first, so that they get filled one at a time instead of being left
+part-full. Anything else in the ender chest is left alone, including your tool shulker box.
 
 These stay with the bot rather than being stored:
 
@@ -193,7 +212,8 @@ These stay with the bot rather than being stored:
 Add anything else it needs to carry, such as `firework_rocket`, with `blockminer keep add <item>`.
 
 For the ender chest, the bot uses the nearest loaded one within 48 blocks, or further away if it isn't
-carrying one. Otherwise it places one beside itself and leaves it there for later.
+carrying one. Otherwise it places one beside itself and leaves it there for later. It won't use one below
+Y -50.
 
 ### Crafting into blocks
 
@@ -246,14 +266,22 @@ that's better than leaving a full shulker box on the ground with nowhere to go.
 
 The bot stops mining, turns itself off and sends a notification when only you can fix the problem:
 
-- no empty shulker boxes left
+- no shulker boxes with room left in the ender chest
 - no fresh tool left
 - no tool of the kind that what you asked for needs
 - no ender chest available
 - the inventory is full of things it isn't allowed to store
+- it's stuck, and can't climb out or keeps getting stuck again
 
 Anything else, such as a path it can't find, gets tried again after 30 seconds, up to three times in a
 row before it stops the same way. Run `blockminer on` once it's sorted.
+
+If the bot can't get to anything it can mine, such as from a pit in the bedrock, it builds its way out with
+blocks it's carrying. It also does this if an errand has nowhere to put something down. The pathfinder only
+builds with blocks on its `acceptableThrowawayItems` list, which doesn't include things like cobbled
+deepslate, so the bot adds common solid blocks it's carrying to that list just until it's out, and then
+takes off what it added. If it's carrying nothing it can use, you'll get a notification saying where it's
+stuck.
 
 If the bot disconnects or a player takes over with a shulker box still placed, or just after breaking
 one, it remembers where and goes back for it when it next runs, whether it's still standing or lying on
@@ -261,18 +289,17 @@ the ground.
 
 ## Things to know
 
-- **It's had very little testing on a live server.** The tests cover its decisions, such as which
-  recipe to use or which tool to mine with, not the mining, crafting and inventory handling themselves.
-  Expect some bugs at first.
+- **It's had very little testing on a live server.** The tests cover its decisions, and follow
+  ZenithProxy's real paths through made-up worlds, but nothing there is a real server, with drops, mobs and
+  lag. Expect some bugs at first.
 - **It doesn't avoid wardens.** ZenithProxy's pathfinder ignores mobs and picks its own path when
   mining, so the bot can walk straight past or into a warden. A warden could kill it, and it would drop
   whatever it's carrying.
 - Run this on its own. The pathfinder can only do one thing at a time, so another plugin moving the bot
   at the same time will conflict with it. If the sign plugin is installed, run both `signplacer off` and
   `restock off`, because the restocker starts by itself whenever the bot is low on signs.
-- A drop that flies off somewhere can get left behind, unless it's also a block on the mining list. The
-  pathfinder only goes back for drops named after a block it's mining, so it goes back for cobbled
-  deepslate but not for diamonds. Normally that's not an issue, because it walks into each block it mines.
+- A drop that flies off somewhere can get left behind, as the bot doesn't go back for drops. Normally
+  that's not an issue, because it walks into each block it mines.
 - Junk it leaves on the ground can land in a slot the moment one frees up, such as while it's storing
   things. That's harmless: it just gets thrown away again later.
 - A placed ender chest stays where the bot put it, so it can get broken if it ends up in the way of

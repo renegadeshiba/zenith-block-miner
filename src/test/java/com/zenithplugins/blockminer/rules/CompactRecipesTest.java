@@ -11,6 +11,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CompactRecipesTest {
 
     @Test
+    void whatSomethingCraftsIntoGoesAllTheWayUp() {
+        assertEquals(java.util.Set.of("gold_ingot", "gold_block"), CompactRecipes.craftedFrom(java.util.Set.of("gold_nugget")));
+        assertEquals(java.util.Set.of("diamond_block"), CompactRecipes.craftedFrom(java.util.Set.of("diamond")));
+        assertEquals(java.util.Set.of(), CompactRecipes.craftedFrom(java.util.Set.of("cobbled_deepslate")));
+    }
+
+    @Test
     void everyItemNameExists() {
         for (CompactRecipes.Recipe recipe : CompactRecipes.ALL) {
             assertNotNull(ItemRegistry.REGISTRY.get(recipe.input()), recipe.input());

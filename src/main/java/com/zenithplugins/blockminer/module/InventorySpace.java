@@ -201,12 +201,13 @@ final class InventorySpace {
     void ensureFreeSlot() {
         if (bot.freeSlots() > 0 || mergeStacks()) return;
 
-        Set<String> targets = targetItems();
+        // Junk first, and that doesn't include what it's crafted, even though that isn't a target item.
+        Set<String> wanted = InventoryPlan.itemsToStore(targetItems(), PLUGIN_CONFIG.stillToStore);
         List<SlotStack> droppable = new ArrayList<>(bot.playerStacks().stream()
             .filter(entry -> StorageRules.isStorable(entry.stack(), PLUGIN_CONFIG.keepItems))
             .toList());
         droppable.sort(Comparator
-            .<SlotStack, Boolean>comparing(entry -> targets.contains(nameOf(entry.stack())))
+            .<SlotStack, Boolean>comparing(entry -> wanted.contains(nameOf(entry.stack())))
             .thenComparingInt(entry -> entry.stack().getAmount()));
         for (SlotStack entry : droppable) {
             if (bot.dropStack(entry.slot())) {

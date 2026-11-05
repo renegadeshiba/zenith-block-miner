@@ -8,10 +8,13 @@ import com.zenith.mc.dimension.DimensionRegistry;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import org.geysermc.mcprotocollib.protocol.data.game.chunk.ChunkSection;
 import org.geysermc.mcprotocollib.protocol.data.game.chunk.PalettedWorldState;
+import org.geysermc.mcprotocollib.protocol.data.game.level.block.BlockEntityInfo;
+import org.geysermc.mcprotocollib.protocol.data.game.level.block.BlockEntityType;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 
+import static com.zenith.Globals.BOT;
 import static com.zenith.Globals.CACHE;
 
 /** A made-up overworld held in ZenithProxy's real chunk cache, so its real code reads it like any other. */
@@ -66,6 +69,12 @@ final class TestWorld {
         section.setBlock(x & 15, y & 15, z & 15, block.minStateId());
     }
 
+    void enderChestAt(int x, int y, int z) {
+        set(x, y, z, BlockRegistry.ENDER_CHEST);
+        chunks.get(Chunk.chunkPosToLong(x >> 4, z >> 4)).getBlockEntities()
+            .add(new BlockEntityInfo(x & 15, y, z & 15, BlockEntityType.ENDER_CHEST, null));
+    }
+
     /** Fills these heights across the whole world. */
     void layer(int minY, int maxY, Block block) {
         for (int x = minX(); x <= maxX(); x++) {
@@ -79,5 +88,6 @@ final class TestWorld {
 
     static void putBotAt(double x, double y, double z) {
         CACHE.getPlayerCache().setX(x).setY(y).setZ(z);
+        BOT.syncFromCache(false);
     }
 }

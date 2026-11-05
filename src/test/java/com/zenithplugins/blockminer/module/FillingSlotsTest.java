@@ -368,21 +368,39 @@ class FillingSlotsTest {
     }
 
     @Test
-    void valuableThingsAreLeftAloneWhenJunkIsThrownAway() throws InterruptedException {
+    void whatStaysWithTheBotIsLeftAloneWhenJunkIsThrownAway() throws InterruptedException {
         startWith(0);
         wanting("cobbled_deepslate");
         put(STACK_SLOT, ItemRegistry.COBBLED_DEEPSLATE, 64);
         put(MAIN_START + 1, ItemRegistry.TUFF, 12);
-        put(MAIN_START + 2, ItemRegistry.DIAMOND, 12);
-        put(MAIN_START + 3, ItemRegistry.ENDER_CHEST, 2);
-        put(MAIN_START + 4, ItemRegistry.NETHERITE_PICKAXE, 1);
+        put(MAIN_START + 2, ItemRegistry.ENDER_CHEST, 2);
+        put(MAIN_START + 3, ItemRegistry.NETHERITE_PICKAXE, 1);
+        put(MAIN_START + 4, ItemRegistry.GOLDEN_CARROT, 5);
+        put(MAIN_START + 5, ItemRegistry.SHULKER_BOX, 1);
 
         space.throwAwayJunk();
         server.settle();
 
         assertEquals(List.of(ItemRegistry.TUFF.id()), server.thrown.stream().map(ItemStack::getId).toList());
-        assertEquals(12, totalOf(ItemRegistry.DIAMOND));
         assertEquals(2, totalOf(ItemRegistry.ENDER_CHEST));
+        assertEquals(1, totalOf(ItemRegistry.NETHERITE_PICKAXE));
+        assertEquals(5, totalOf(ItemRegistry.GOLDEN_CARROT));
+        assertEquals(1, totalOf(ItemRegistry.SHULKER_BOX));
+        assertEquals(64, totalOf(ItemRegistry.COBBLED_DEEPSLATE));
+    }
+
+    @Test
+    void anythingItWasntAskedForIsJunkHoweverValuableItLooks() throws InterruptedException {
+        startWith(0);
+        wanting("cobbled_deepslate");
+        put(STACK_SLOT, ItemRegistry.COBBLED_DEEPSLATE, 64);
+        put(MAIN_START + 1, ItemRegistry.DIAMOND, 12);
+        put(MAIN_START + 2, ItemRegistry.RAW_IRON, 3);
+
+        space.throwAwayJunk();
+        server.settle();
+
+        assertEquals(List.of(ItemRegistry.DIAMOND.id(), ItemRegistry.RAW_IRON.id()), server.thrown.stream().map(ItemStack::getId).toList());
         assertEquals(64, totalOf(ItemRegistry.COBBLED_DEEPSLATE));
     }
 
