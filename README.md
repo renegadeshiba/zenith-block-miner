@@ -17,12 +17,12 @@ tool shulker box in the ender chest.
 Install or update directly from the Zenith terminal (or Discord as the account owner):
 
 ```
-plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.4/BlockMiner-1.1.4.jar
+plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.5/BlockMiner-1.1.5.jar
 restart
 ```
 
-Alternatively, download `BlockMiner-1.1.4.jar` from the
-[GitHub release](https://github.com/renegadeshiba/zenith-block-miner/releases/tag/v1.1.4), copy it into
+Alternatively, download `BlockMiner-1.1.5.jar` from the
+[GitHub release](https://github.com/renegadeshiba/zenith-block-miner/releases/tag/v1.1.5), copy it into
 the `plugins/` directory beside your ZenithProxy jar, and restart ZenithProxy.
 
 ## Getting started
