@@ -1,23 +1,40 @@
-## What it does
+## What's changed
 
-**Mines the blocks you choose** around the bot and keeps going until you stop it.
+**You now ask for the item you want, and the bot works out what to mine and with what tool.**
 
-**Keeps junk out.** It fills every empty inventory slot with one of the item it's mining, so nothing else can be picked up and junk stays on the ground.
+| You ask for | It mines | With |
+|---|---|---|
+| `diamond` | `diamond_ore`, `deepslate_diamond_ore` | a Fortune tool |
+| `diamond_ore` | `diamond_ore` | a Silk Touch tool |
+| `cobbled_deepslate` | `deepslate`, `cobbled_deepslate` | a tool without Silk Touch |
+| `deepslate` | `deepslate` | a Silk Touch tool |
+| `ancient_debris` | `ancient_debris` | any tool |
 
-**Stores what it mines.** When its stacks fill up, it crafts items like diamonds into blocks, takes an empty shulker box from the ender chest, fills it and puts it back. A stack of the material stays with the bot to fill the slots again.
+The [README](https://github.com/renegadeshiba/zenith-block-miner#choosing-what-to-mine) has the full list.
 
-**Swaps worn tools.** When the tool in hand has 5 durability left, it swaps it for a fresh one from a tool shulker box in the ender chest and leaves the worn one in that shulker box.
+- **It gets the right tool.** The pathfinder uses whichever tool on the hotbar is fastest, so the bot now moves wrong tools off the hotbar and the right one onto it. If it isn't carrying the right one, it fetches it from a tool shulker box in the ender chest. If there isn't one there either, it stops and tells you why.
+- **Worn tools get replaced with the right kind.** A worn Fortune pickaxe won't be replaced with a Silk Touch one when you're after diamonds.
+- **It only keeps what you asked for.** Ask for `diamond`, and the cobbled deepslate from mining down to it stays on the ground.
+- **It tells you what it will do.** `blockminer add` says what it will mine and with what, and tells you if an item needs a different tool from the ones you've already chosen.
 
-See the [README](https://github.com/renegadeshiba/zenith-block-miner#getting-started) for what to put in the ender chest before turning it on.
+## You need to do this
 
-## Before you run it
+**Choose your items again**, because the list has been replaced and what the names mean has changed. For example, `diamond_ore` now means the ore block itself, which takes Silk Touch. For diamonds, use `diamond`.
 
-**This hasn't been run on a live server yet.** The tests only cover its decisions, such as which recipe to use or when to swap a tool, not the mining, crafting and inventory handling themselves. Try it with nothing valuable on the bot, and watch it the first few times it stores things and swaps a tool.
+```
+blockminer add diamond
+```
 
-**It doesn't avoid wardens.** It can walk straight past or into them, and a warden could kill it, so keep it well away from any.
+If the sign plugin is installed, run both `signplacer off` and `restock off` before mining. The restocker starts by itself whenever the bot is low on signs.
+
+## How this was tested
+
+The new tests run ZenithProxy's real tool choice over made-up hotbars, and check the rules for every item.
+
+**The moving and fetching of tools hasn't been run on a live server yet.** Please watch it the first time it has to sort out the hotbar or fetch a tool.
 
 ## Install
 
 ```
-plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.0.0/BlockMiner-1.0.0.jar
+plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.0/BlockMiner-1.1.0.jar
 ```

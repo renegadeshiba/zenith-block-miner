@@ -17,12 +17,12 @@ tool shulker box in the ender chest.
 Install or update directly from the Zenith terminal (or Discord as the account owner):
 
 ```
-plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.0.0/BlockMiner-1.0.0.jar
+plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.0/BlockMiner-1.1.0.jar
 restart
 ```
 
-Alternatively, download `BlockMiner-1.0.0.jar` from the
-[GitHub release](https://github.com/renegadeshiba/zenith-block-miner/releases/tag/v1.0.0), copy it into
+Alternatively, download `BlockMiner-1.1.0.jar` from the
+[GitHub release](https://github.com/renegadeshiba/zenith-block-miner/releases/tag/v1.1.0), copy it into
 the `plugins/` directory beside your ZenithProxy jar, and restart ZenithProxy.
 
 ## Getting started
@@ -225,8 +225,8 @@ the ground.
 
 ## Things to know
 
-- **1.0.0 hasn't been run on a live server yet.** The tests only cover its decisions, such as which
-  recipe to use or when to swap a tool, not the mining, crafting and inventory handling themselves.
+- **It's had very little testing on a live server.** The tests cover its decisions, such as which
+  recipe to use or which tool to mine with, not the mining, crafting and inventory handling themselves.
   Expect some bugs at first.
 - **It doesn't avoid wardens.** ZenithProxy's pathfinder ignores mobs and picks its own path when
   mining, so the bot can walk straight past or into a warden. A warden could kill it, and it would drop
