@@ -158,6 +158,42 @@ class StoringInShulkersTest {
         return server.amountOf(item, FIRST_PLAYER_SLOT, ALL_SLOTS);
     }
 
+    private void openAnEnderChestThatLooksEmptyToBeginWith() {
+        inventory().reset();
+        inventory().openContainer(CONTAINER_ID, ContainerType.GENERIC_9X3, Component.text("Ender Chest"));
+    }
+
+    @Test
+    void waitsForAnEnderChestsContentsToTurnUpBeforeSayingItHasNoShulkerBoxes() throws InterruptedException {
+        openAnEnderChestThatLooksEmptyToBeginWith();
+        carry(5, ItemRegistry.COBBLED_DEEPSLATE);
+        ItemStack emptyBox = new ItemStack(ItemRegistry.SHULKER_BOX.id(), 1);
+        server.network.schedule(() -> inventory().setItemStack(CONTAINER_ID, 3, emptyBox), 300, TimeUnit.MILLISECONDS);
+
+        int slot = storage.shulkerToFillOnceItsLoaded();
+        server.settle();
+
+        assertEquals(3, slot);
+    }
+
+    @Test
+    void anEnderChestWithNoShulkerBoxesInItStillHasNone() {
+        openAnEnderChestThatLooksEmptyToBeginWith();
+        carry(5, ItemRegistry.COBBLED_DEEPSLATE);
+
+        assertEquals(-1, storage.shulkerToFillOnceItsLoaded());
+    }
+
+    @Test
+    void aContainerHasNothingInItUntilAServerSaysSo() {
+        openAnEnderChestThatLooksEmptyToBeginWith();
+        assertFalse(Bot.contentsHaveArrived());
+
+        inventory().getOpenContainer().setStateId(1);
+
+        assertTrue(Bot.contentsHaveArrived());
+    }
+
     @Test
     void addsToWhatsAlreadyInAStartedBoxKeepingAStackBack() throws InterruptedException {
         putInShulker(3, ItemRegistry.COBBLED_DEEPSLATE, 64);

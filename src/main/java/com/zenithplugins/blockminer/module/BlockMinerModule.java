@@ -1,6 +1,7 @@
 package com.zenithplugins.blockminer.module;
 
 import com.github.rfresh2.EventConsumer;
+import com.google.common.collect.Sets;
 import com.zenith.discord.Embed;
 import com.zenith.event.client.ClientBotTick;
 import com.zenith.feature.pathfinder.PathingRequestFuture;
@@ -12,11 +13,17 @@ import com.zenith.mc.block.BlockRegistry;
 import com.zenith.mc.item.ItemData;
 import com.zenith.mc.item.ItemRegistry;
 import com.zenith.module.api.Module;
+import com.zenith.network.client.ClientSession;
+import com.zenith.network.codec.PacketHandlerCodec;
+import com.zenith.network.codec.PacketHandlerStateCodec;
+import com.zenith.network.codec.PostOutgoingPacketHandler;
 import com.zenithplugins.blockminer.BlockMinerConfig.PlacedBlock;
 import com.zenithplugins.blockminer.rules.StorageRules;
 import com.zenithplugins.blockminer.rules.TargetItems;
 import com.zenithplugins.blockminer.rules.TargetItems.ToolNeed;
 import com.zenithplugins.blockminer.rules.ToolRules;
+import org.geysermc.mcprotocollib.protocol.data.ProtocolState;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemOnPacket;
 import org.jspecify.annotations.Nullable;
 
 import java.util.Arrays;
@@ -42,15 +49,19 @@ public class BlockMinerModule extends Module {
     // The pathfinder won't search again any sooner than this after failing to find a path.
     private static final int NO_PATH_RETRY_TICKS = 20;
     private static final int NO_PATH_TRIES = 3;
+    // It only goes for a few at a time of a block worth looking for, so it takes more to show that it's stuck.
+    private static final int NO_PATH_TRIES_FOR_NEAREST = 12;
     // A block overhead takes moments to mine, or a few seconds without the right tool.
     private static final int MINING_OVERHEAD_TIMEOUT_TICKS = 20 * 30;
     // Blocks it couldn't get to might be fine from somewhere else, once it's moved on.
     private static final int OUT_OF_REACH_MEMORY_TICKS = 20 * 60 * 5;
     // Enough to be clear of what it was stuck in, and it mines on from there.
     private static final int CLIMB_BLOCKS = 6;
-    private static final int MAX_TIMES_STUCK = 3;
-    // Getting stuck again after this long isn't part of the same problem.
-    private static final int STUCK_MEMORY_TICKS = 20 * 60 * 5;
+    // In a row, without getting any mining done in between.
+    private static final int MAX_TIMES_STUCK = 5;
+    private static final int WAYS_TO_WALK_AWAY = 4;
+    // Even if it didn't get all the way, it's somewhere else now.
+    private static final int FAR_ENOUGH_AWAY = BlockScan.MINING_AREA_RADIUS;
     private static final int FAILED_ERRAND_RETRY_TICKS = 20 * 30;
     private static final int MAX_FAILED_ERRANDS = 3;
     // While the bot is still building up target items, how often it stops to fill more slots with them.
@@ -84,16 +95,21 @@ public class BlockMinerModule extends Module {
     private BlockScan.@Nullable MiningArea miningArea;
     // Null while exploring, when there's nothing to go for.
     private BlockScan.@Nullable MiningGoal currentGoal;
+    private @Nullable BlockOptionalMetaLookup currentBlocks;
     private int exploringDirection;
     private boolean reportedExploring;
     private final Set<BlockPos> outOfReach = new HashSet<>();
+    private final PlacedBlocks placedBlocks = new PlacedBlocks();
     private long lastOutOfReachTick;
     private int noPathsInARow;
+    private int failuresOnLevel;
 
+    private volatile boolean walkingAway;
+    private int waysLeftToWalkAway;
+    private int @Nullable [] walkingAwayFrom;
     private volatile boolean climbingOut;
     private volatile boolean roomNeeded;
     private int timesStuck;
-    private long lastStuckTick;
 
     @Override
     public List<EventConsumer<?>> registerEvents() {
@@ -102,6 +118,19 @@ public class BlockMinerModule extends Module {
             of(ClientBotTick.Starting.class, this::handleStarting),
             of(ClientBotTick.Stopped.class, this::handleStopped)
         );
+    }
+
+    @Override
+    public PacketHandlerCodec registerClientPacketHandlerCodec() {
+        return PacketHandlerCodec.clientBuilder()
+            .setId("block-miner")
+            .state(ProtocolState.GAME, PacketHandlerStateCodec.clientBuilder()
+                .postOutbound(
+                    ServerboundUseItemOnPacket.class,
+                    (PostOutgoingPacketHandler<ServerboundUseItemOnPacket, ClientSession>) (packet, session) ->
+                        placedBlocks.clicked(packet.getX(), packet.getY(), packet.getZ(), packet.getFace()))
+                .build())
+            .build();
     }
 
     @Override
@@ -117,6 +146,7 @@ public class BlockMinerModule extends Module {
         nextMineTick = 0;
         nextToolCheckTick = 0;
         noPathsInARow = 0;
+        failuresOnLevel = 0;
         timesStuck = 0;
         roomNeeded = false;
         forgetWhereItWasMining();
@@ -139,7 +169,7 @@ public class BlockMinerModule extends Module {
 
     private void handleStarting(ClientBotTick.Starting event) {
         mining = null;
-        stopClimbing();
+        stopGettingOut();
         forgetWhereItWasMining();
         // The world and inventory are still arriving, so what the bot sees isn't to be trusted yet.
         nextMineTick = tick + STARTUP_WAIT_TICKS;
@@ -148,7 +178,7 @@ public class BlockMinerModule extends Module {
 
     private void handleStopped(ClientBotTick.Stopped event) {
         mining = null;
-        stopClimbing();
+        stopGettingOut();
         status = "Paused";
     }
 
@@ -169,7 +199,7 @@ public class BlockMinerModule extends Module {
             startClimbingOut("Climbing to find room for its errand");
         }
         // Getting out comes first, as nothing else can get done from where it's stuck.
-        if (climbingOut) {
+        if (climbingOut || walkingAway) {
             keepMining();
         } else if (needsErrand()) {
             // Waiting out a failed errand still means not mining: the next few blocks could be the
@@ -215,6 +245,10 @@ public class BlockMinerModule extends Module {
 
         if (climbingOut) {
             mining = BARITONE.pathTo(new GoalY(bot.position()[1] + CLIMB_BLOCKS));
+            return;
+        }
+        if (walkingAway) {
+            mining = BARITONE.pathTo(BlockScan.walkingAwayGoal(exploringDirection));
             return;
         }
 
@@ -266,7 +300,8 @@ public class BlockMinerModule extends Module {
         if (tick - lastOutOfReachTick > OUT_OF_REACH_MEMORY_TICKS) outOfReach.clear();
 
         String names = Arrays.stream(blocks).map(Block::name).collect(Collectors.joining(" or "));
-        currentGoal = BlockScan.miningGoal(new BlockOptionalMetaLookup(blocks), miningArea, outOfReach);
+        currentBlocks = new BlockOptionalMetaLookup(blocks);
+        currentGoal = BlockScan.miningGoal(currentBlocks, miningArea, Sets.union(outOfReach, placedBlocks.positions()));
         if (currentGoal == null) {
             if (!reportedExploring) info("None of {} in the loaded chunks, so going to look for some", names);
             reportedExploring = true;
@@ -294,7 +329,8 @@ public class BlockMinerModule extends Module {
 
     private void noPathFound() {
         noPathsInARow++;
-        if (noPathsInARow >= NO_PATH_TRIES) {
+        boolean goingForNearest = currentGoal != null && currentGoal.area() == null;
+        if (noPathsInARow >= (goingForNearest ? NO_PATH_TRIES_FOR_NEAREST : NO_PATH_TRIES)) {
             noPathsInARow = 0;
             gotStuck();
             return;
@@ -303,21 +339,57 @@ public class BlockMinerModule extends Module {
         nextMineTick = tick + NO_PATH_RETRY_TICKS;
     }
 
-    /** It can't get to anything from here, so it builds its way out if it can, and asks for help if not. */
+    /** It can't get to anything from here, so it tries somewhere else altogether, and asks for help if it can't. */
     private void gotStuck() {
         String where = whereTheBotIs();
-        timesStuck = tick - lastStuckTick > STUCK_MEMORY_TICKS ? 1 : timesStuck + 1;
-        lastStuckTick = tick;
+        String goingFor = currentGoal == null || currentGoal.blocks().isEmpty() ? "somewhere new" : String.valueOf(currentGoal.blocks().getFirst());
+        timesStuck++;
         stopMining();
         if (timesStuck > MAX_TIMES_STUCK) {
-            stopAndNotify("It keeps getting stuck, most recently at " + where + ", so it needs moving somewhere else");
-        } else if (!climbingBlocks.allow()) {
+            stopAndNotify("It keeps getting stuck, most recently at " + where + " going for " + goingFor
+                + ", so it needs moving somewhere else");
+            return;
+        }
+        warn("Can't get to anything from {}, going for {}, so walking away from there", where, goingFor);
+        walkingAway = true;
+        waysLeftToWalkAway = WAYS_TO_WALK_AWAY;
+        walkingAwayFrom = bot.position();
+        climbingBlocks.allow();
+        nextMineTick = 0;
+        status = "Walking away from " + where + ", as it can't get to anything from there";
+    }
+
+    private void walkingAwayEnded(boolean succeeded) {
+        if (succeeded || isFarEnoughAway()) {
+            stopGettingOut();
+            noPathsInARow = 0;
+            forgetWhereItWasMining();
+            nextMineTick = 0;
+            return;
+        }
+        // The pathfinder won't search again any sooner, whichever way it's looking.
+        nextMineTick = tick + NO_PATH_RETRY_TICKS;
+        exploringDirection++;
+        waysLeftToWalkAway--;
+        if (waysLeftToWalkAway > 0) return;
+
+        String where = whereTheBotIs();
+        stopGettingOut();
+        climbingBlocks.allow();
+        if (climbingBlocks.canBuild()) {
+            warn("Can't walk away from {} in any direction, so building its way out", where);
+            startClimbingOut("Climbing out from " + where);
+        } else {
             stopAndNotify("It's stuck at " + where + ", with no way to dig to anything it can mine, and no blocks"
                 + " that it can climb out with. Give it some, or get it out");
-        } else {
-            warn("Stuck at {}, so building its way out", where);
-            startClimbingOut("Climbing out from " + where);
         }
+    }
+
+    private boolean isFarEnoughAway() {
+        int[] from = walkingAwayFrom;
+        if (from == null) return false;
+        int[] now = bot.position();
+        return Math.abs(now[0] - from[0]) + Math.abs(now[2] - from[2]) >= FAR_ENOUGH_AWAY;
     }
 
     private void startClimbingOut(String reason) {
@@ -326,8 +398,10 @@ public class BlockMinerModule extends Module {
         status = reason;
     }
 
-    private void stopClimbing() {
+    private void stopGettingOut() {
         climbingOut = false;
+        walkingAway = false;
+        walkingAwayFrom = null;
         climbingBlocks.stopAllowing();
     }
 
@@ -338,8 +412,12 @@ public class BlockMinerModule extends Module {
 
     private void miningEnded(boolean succeeded) {
         mining = null;
+        if (walkingAway) {
+            walkingAwayEnded(succeeded);
+            return;
+        }
         if (climbingOut) {
-            stopClimbing();
+            stopGettingOut();
             if (succeeded) {
                 noPathsInARow = 0;
                 // Nothing that was out of reach from where it was stuck has to be from here.
@@ -352,22 +430,55 @@ public class BlockMinerModule extends Module {
         }
         if (succeeded) {
             noPathsInARow = 0;
+            failuresOnLevel = 0;
             nextMineTick = 0;
+            // Only getting some mining done shows that it's got over whatever was stopping it.
+            if (currentGoal != null && currentGoal.onBotsLevel()) timesStuck = 0;
+            climbingBlocks.stopAllowing();
             return;
         }
-        if (currentGoal != null) {
-            outOfReach.addAll(currentGoal.blocks());
-            lastOutOfReachTick = tick;
-        } else {
-            exploringDirection++;
+        // Before giving up on anything, it sees whether it can get there by building.
+        if (climbingBlocks.allow()) {
+            status = "Waiting: can't find a way without building, so trying again with blocks";
+            nextMineTick = tick + NO_PATH_RETRY_TICKS;
+            return;
         }
-        noPathFound();
+        if (currentGoal == null) {
+            exploringDirection++;
+            noPathFound();
+            return;
+        }
+        outOfReach.addAll(currentGoal.blocks());
+        lastOutOfReachTick = tick;
+        if (currentGoal.onBotsLevel()) {
+            couldntGetToItOnItsLevel();
+        } else {
+            noPathFound();
+        }
+    }
+
+    /**
+     * What's left at the end of a level is often what's hardest to get to, like blocks next to lava, and that
+     * doesn't make it stuck. It has the rest of the section to go on to, and if it can't get to that either,
+     * then it's stuck.
+     */
+    private void couldntGetToItOnItsLevel() {
+        failuresOnLevel++;
+        status = "Waiting: can't get to what's left of this level";
+        nextMineTick = tick + NO_PATH_RETRY_TICKS;
+        BlockScan.MiningArea area = miningArea;
+        BlockOptionalMetaLookup blocks = currentBlocks;
+        if (failuresOnLevel < NO_PATH_TRIES || area == null || blocks == null) return;
+
+        failuresOnLevel = 0;
+        info("Can't get to what's left of level {}, so moving on from it", area.level());
+        outOfReach.addAll(BlockScan.blocksOnLevel(blocks, area));
     }
 
     private void stopMining() {
         if (mining != null) BARITONE.stop();
         mining = null;
-        stopClimbing();
+        stopGettingOut();
     }
 
     // ----------------------------------------------------------------------------------------

@@ -585,7 +585,7 @@ class BlockScanTest {
     @Test
     void anOreAboveItIsAsGoodAsOneBelowIt() {
         world.layer(-64, 8, BlockRegistry.DEEPSLATE);
-        world.set(8, -35, 8, BlockRegistry.DEEPSLATE_DIAMOND_ORE);
+        world.set(12, -35, 8, BlockRegistry.DEEPSLATE_DIAMOND_ORE);
         world.set(8, -48, 8, BlockRegistry.DEEPSLATE_DIAMOND_ORE);
         TestWorld.putBotAt(8.5, -40, 8.5);
         BlockScan.MiningArea area = new BlockScan.MiningArea(8, 8, BlockScan.MINING_AREA_RADIUS);
@@ -593,7 +593,214 @@ class BlockScanTest {
         BlockScan.MiningGoal goal = BlockScan.miningGoal(DIAMONDS, area, NOTHING_OUT_OF_REACH);
 
         assertNotNull(goal);
-        assertEquals(List.of(new BlockPos(8, -35, 8), new BlockPos(8, -48, 8)), goal.blocks());
+        assertEquals(List.of(new BlockPos(12, -35, 8), new BlockPos(8, -48, 8)), goal.blocks());
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // clearing the ore around it before moving on
+    // ----------------------------------------------------------------------------------------
+
+    private static final BlockOptionalMetaLookup COAL = new BlockOptionalMetaLookup(BlockRegistry.COAL_ORE);
+
+    /** A tunnel through stone with the ceiling up high in places, and it's standing at the start of it. */
+    private PretendBot botInATunnel() {
+        world.layer(0, 40, BlockRegistry.STONE);
+        for (int x = 8; x <= 14; x++) airAt(new BlockPos(x, 20, 8));
+        area = new BlockScan.MiningArea(8, 8, RADIUS);
+        return new PretendBot(world, new BlockPos(8, 20, 8), COAL);
+    }
+
+    private BlockScan.MiningGoal mineNextOre(PretendBot bot) {
+        // Going for one of these leaves it with no section to carry on with.
+        area = new BlockScan.MiningArea(bot.at.x(), bot.at.z(), RADIUS);
+        return mineNext(bot, COAL);
+    }
+
+    @Test
+    void minesOreStraightAboveItWithoutMoving() {
+        PretendBot bot = botInATunnel();
+        world.set(8, 22, 8, BlockRegistry.COAL_ORE);
+
+        BlockScan.MiningGoal goal = mineNextOre(bot);
+
+        assertNull(goal.goal(), "it doesn't have to go anywhere");
+        assertEquals(List.of(new BlockPos(8, 22, 8)), goal.blocks());
+        assertEquals(new BlockPos(8, 20, 8), bot.at);
+        assertEquals(1, bot.wantedBroken);
+    }
+
+    @Test
+    void digsUpThroughWhatsInTheWayToOreAboveIt() {
+        PretendBot bot = botInATunnel();
+        world.set(8, 26, 8, BlockRegistry.COAL_ORE);
+
+        for (int y = 22; y <= 26; y++) {
+            BlockScan.MiningGoal goal = mineNextOre(bot);
+            assertEquals(List.of(new BlockPos(8, y, 8)), goal.blocks());
+            assertNull(goal.goal());
+        }
+
+        assertEquals(new BlockPos(8, 20, 8), bot.at);
+        assertEquals(1, bot.wantedBroken);
+    }
+
+    @Test
+    void leavesWhatsAboveItAloneWithNoOreThere() {
+        PretendBot bot = botInATunnel();
+        world.set(14, 20, 12, BlockRegistry.COAL_ORE);
+
+        BlockScan.MiningGoal goal = mineNextOre(bot);
+
+        assertNotNull(goal.goal());
+        assertEquals(BlockRegistry.STONE, World.getBlock(new BlockPos(8, 22, 8)));
+    }
+
+    /** A hole in the ceiling, with ore at the top of it, that it can't get to by walking into it. */
+    private void oreInTheCeilingAt(int x, int y, int z) {
+        for (int air = 22; air < y; air++) world.set(x, air, z, BlockRegistry.AIR);
+        world.set(x, y, z, BlockRegistry.COAL_ORE);
+    }
+
+    @Test
+    void walksUnderOreInTheCeilingAndMinesItFromThere() {
+        PretendBot bot = botInATunnel();
+        oreInTheCeilingAt(10, 24, 8);
+
+        BlockScan.MiningGoal walk = mineNextOre(bot);
+
+        assertEquals(new BlockPos(10, 20, 8), bot.at);
+        assertFalse(walk.onBotsLevel());
+        BlockScan.MiningGoal mine = mineNextOre(bot);
+        assertNull(mine.goal());
+        assertEquals(List.of(new BlockPos(10, 24, 8)), mine.blocks());
+        assertEquals(1, bot.wantedBroken);
+        assertEquals(0, bot.blocksPlaced, "it didn't have to build up to it");
+    }
+
+    @Test
+    void doesntGoUnderOreThatsTooHighToReach() {
+        botInATunnel();
+        oreInTheCeilingAt(10, 27, 8);
+        TestWorld.putBotAt(8.5, 20, 8.5);
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(8, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+        assertNotNull(goal);
+        assertFalse(goal.goal().isInGoal(10, 20, 8));
+    }
+
+    @Test
+    void doesntGoUnderOreItWouldntMineFromThere() {
+        botInATunnel();
+        oreInTheCeilingAt(10, 24, 8);
+        world.set(10, 25, 8, BlockRegistry.GRAVEL);
+        TestWorld.putBotAt(8.5, 20, 8.5);
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(8, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+        assertNotNull(goal);
+        assertFalse(goal.goal().isInGoal(10, 20, 8), "that would fall on it");
+    }
+
+    @Test
+    void goesUnderOreAsHighAsItCanReach() {
+        botInATunnel();
+        oreInTheCeilingAt(10, 26, 8);
+        TestWorld.putBotAt(8.5, 20, 8.5);
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(8, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+        assertNotNull(goal);
+        assertTrue(goal.goal().isInGoal(10, 20, 8));
+    }
+
+    @Test
+    void doesntGoUnderOreWithNothingToStandOn() {
+        botInATunnel();
+        oreInTheCeilingAt(10, 24, 8);
+        world.set(10, 19, 8, BlockRegistry.LAVA);
+        TestWorld.putBotAt(8.5, 20, 8.5);
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(8, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+        assertNotNull(goal);
+        assertFalse(goal.goal().isInGoal(10, 20, 8));
+    }
+
+    @Test
+    void doesntGoUnderSomethingThatWouldFallOnItIfThatsWhatItsAfter() {
+        botInATunnel();
+        for (int air = 22; air < 24; air++) world.set(10, air, 8, BlockRegistry.AIR);
+        world.set(10, 24, 8, BlockRegistry.SAND);
+        TestWorld.putBotAt(8.5, 20, 8.5);
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(
+            new BlockOptionalMetaLookup(BlockRegistry.SAND), new BlockScan.MiningArea(8, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+        assertNotNull(goal);
+        assertFalse(goal.goal().isInGoal(10, 20, 8));
+    }
+
+    @Test
+    void doesntStayUnderOreThatItCantMineFromThere() {
+        // Zenith says it can't reach it, and a walk to where it's standing would be over before it started, every time.
+        botInATunnel();
+        oreInTheCeilingAt(8, 24, 8);
+        TestWorld.putBotAt(8.5, 10, 8.5);
+        CACHE.getPlayerCache().setY(20);
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(8, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+        assertNotNull(goal);
+        assertNotNull(goal.goal(), "it can't mine it from here");
+        assertFalse(goal.goal().isInGoal(8, 20, 8));
+    }
+
+    @Test
+    void goesUnderOreInItsColumnFromSomewhereElseInIt() {
+        // Above the place it would stand, like on a ledge it's walked off.
+        botInATunnel();
+        for (int air = 19; air >= 16; air--) world.set(8, air, 8, BlockRegistry.AIR);
+        oreInTheCeilingAt(8, 21, 8);
+        world.set(8, 21, 8, BlockRegistry.COAL_ORE);
+        TestWorld.putBotAt(8.5, 10, 8.5);
+        CACHE.getPlayerCache().setY(30);
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(8, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+        assertNotNull(goal);
+        assertTrue(goal.goal().isInGoal(8, 16, 8), "that's the floor under it, and it isn't standing on it yet");
+    }
+
+    @Test
+    void onlyGoesForTheNextFewNearest() {
+        botInATunnel();
+        for (int x = 14; x <= 24; x++) world.set(x, 20, 8, BlockRegistry.COAL_ORE);
+        TestWorld.putBotAt(8.5, 20, 8.5);
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(8, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+        assertNotNull(goal);
+        assertEquals(
+            List.of(new BlockPos(14, 20, 8), new BlockPos(15, 20, 8), new BlockPos(16, 20, 8), new BlockPos(17, 20, 8)),
+            goal.blocks());
+    }
+
+    @Test
+    void getsTheOreAroundItBeforeWanderingOffAfterTheEasyOnes() {
+        // What it was doing: a long line of it to walk straight into, and it left all of these behind.
+        PretendBot bot = botInATunnel();
+        for (int x = 15; x <= 40; x++) world.set(x, 20, 8, BlockRegistry.COAL_ORE);
+        BlockPos[] harder = {new BlockPos(9, 24, 8), new BlockPos(11, 23, 8), new BlockPos(13, 25, 8)};
+        oreInTheCeilingAt(9, 24, 8);
+        oreInTheCeilingAt(11, 23, 8);
+        oreInTheCeilingAt(13, 25, 8);
+
+        for (int step = 0; step < 100 && bot.at.x() < 20; step++) mineNextOre(bot);
+
+        for (BlockPos pos : harder) {
+            assertFalse(COAL.has(World.getBlock(pos)), "left " + pos + " behind");
+        }
     }
 
     @Test
@@ -1252,6 +1459,156 @@ class BlockScanTest {
         assertEquals(ON_LEVEL - 7, area.level());
         mineNext(bot);
         assertEquals(ON_LEVEL - 7, area.level(), "there's plenty above that it never reached, but it's not going back for it");
+    }
+
+    /** Lava beside the space above it, so it can't stand there, but the block itself is fine to mine. */
+    private BlockPos aBlockWithLavaBesideTheSpaceAboveIt() {
+        botOnALevelAndOneBlockLeftOnIt();
+        world.set(10, ON_LEVEL + 1, 8, BlockRegistry.LAVA);
+        return new BlockPos(9, ON_LEVEL, 8);
+    }
+
+    private void botOnALevelAndOneBlockLeftOnIt() {
+        for (int height = 2; height <= 6; height++) setAbove(height, BlockRegistry.AIR);
+        area = new BlockScan.MiningArea(8, 8, 1).onLevel(ON_LEVEL);
+        int[][] others = {{7, 8}, {8, 7}, {8, 9}};
+        for (int[] other : others) {
+            world.set(other[0], ON_LEVEL, other[1], BlockRegistry.AIR);
+            world.set(other[0], ON_LEVEL + 1, other[1], BlockRegistry.AIR);
+        }
+    }
+
+    @Test
+    void reallyCantGetToABlockWithLavaBesideTheSpaceAboveIt() {
+        // What got it into thinking it was stuck: there's often some of these left at the end of a level.
+        PretendBot bot = botOnALevel();
+        BlockPos block = aBlockWithLavaBesideTheSpaceAboveIt();
+
+        BlockScan.MiningGoal goal = goalNow();
+
+        assertEquals(List.of(block), goal.blocks());
+        assertFalse(bot.carryOut(goal), "got to " + bot.at);
+    }
+
+    @Test
+    void goesOnToTheNextLevelFromABlockItCantGetTo() {
+        PretendBot bot = botOnALevel();
+        BlockPos block = aBlockWithLavaBesideTheSpaceAboveIt();
+        assertEquals(List.of(block), goalNow().blocks());
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(DEEPSLATE, area, Set.of(block));
+
+        assertNotNull(goal);
+        assertEquals(ON_LEVEL - 7, goal.area().level());
+        assertTrue(bot.carryOut(goal), "stuck at " + bot.at);
+        assertEquals(ON_LEVEL - 7, bot.at.y());
+    }
+
+    @Test
+    void findsAllThatsOnALevelToGiveUpOn() {
+        world.layer(-64, 8, BlockRegistry.DEEPSLATE);
+        TestWorld.putBotAt(8.5, -40, 8.5);
+        BlockScan.MiningArea section = new BlockScan.MiningArea(8, 8, RADIUS).onLevel(ON_LEVEL);
+        int spots = 0;
+        for (int x = 8 - RADIUS; x <= 8 + RADIUS; x++) {
+            for (int z = 8 - RADIUS; z <= 8 + RADIUS; z++) {
+                if (section.contains(x, z)) spots++;
+            }
+        }
+
+        List<BlockPos> blocks = BlockScan.blocksOnLevel(DEEPSLATE, section);
+
+        assertEquals(spots * 2, blocks.size());
+        assertTrue(blocks.stream().allMatch(pos -> (pos.y() == ON_LEVEL || pos.y() == ON_LEVEL + 1) && section.contains(pos.x(), pos.z())));
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // building, and walking away
+    // ----------------------------------------------------------------------------------------
+
+    /** Two platforms with a gap too wide to jump between, and nothing else to dig or walk on. */
+    private BlockPos twoPlatforms() {
+        for (int x = 4; x <= 24; x++) {
+            if (x >= 11 && x <= 15) continue;
+            for (int z = 6; z <= 10; z++) world.set(x, 30, z, BlockRegistry.STONE);
+        }
+        world.set(20, 31, 8, BlockRegistry.DEEPSLATE);
+        return new BlockPos(8, 31, 8);
+    }
+
+    private void withBlocksToBuildWith(Runnable test) {
+        var inventory = CACHE.getPlayerCache().getInventoryCache().getPlayerInventory();
+        inventory.setItemStack(9, new ItemStack(ItemRegistry.COBBLED_DEEPSLATE.id(), 64));
+        Set<String> list = CONFIG.client.extra.pathfinder.acceptableThrowawayItems;
+        list.add("cobbled_deepslate");
+        try {
+            test.run();
+        } finally {
+            list.remove("cobbled_deepslate");
+            inventory.setItemStack(9, Container.EMPTY_STACK);
+        }
+    }
+
+    @Test
+    void cantGetAcrossAGapWithoutBuilding() {
+        PretendBot bot = new PretendBot(world, twoPlatforms(), DEEPSLATE);
+
+        BlockScan.MiningGoal goal = goalAnywhere(DEEPSLATE);
+
+        assertNotNull(goal);
+        assertFalse(bot.carryOut(goal), "got to " + bot.at);
+    }
+
+    @Test
+    void buildsAcrossAGapWithWhatItsMined() {
+        PretendBot bot = new PretendBot(world, twoPlatforms(), DEEPSLATE);
+        BlockScan.MiningGoal goal = goalAnywhere(DEEPSLATE);
+        assertNotNull(goal);
+
+        withBlocksToBuildWith(() -> assertTrue(bot.carryOut(goal), "got to " + bot.at));
+
+        assertEquals(1, bot.wantedBroken);
+        assertTrue(bot.blocksPlaced >= 5, "placed " + bot.blocksPlaced);
+    }
+
+    @Test
+    void wouldGoBackToMineWhatItBuiltIfItWasntToldNotTo() {
+        PretendBot bot = new PretendBot(world, twoPlatforms(), DEEPSLATE);
+        BlockScan.MiningGoal goal = goalAnywhere(DEEPSLATE);
+        assertNotNull(goal);
+        withBlocksToBuildWith(() -> assertTrue(bot.carryOut(goal), "got to " + bot.at));
+
+        BlockScan.MiningGoal goBack = goalAnywhere(DEEPSLATE);
+        assertNotNull(goBack, "what it built looks just like what it's after");
+        assertTrue(bot.placed.containsAll(goBack.blocks()));
+
+        assertNull(BlockScan.miningGoal(DEEPSLATE, sectionAroundBot(), bot.placed), "and that's all that's left");
+    }
+
+    @Test
+    void walkingAwayGoesFarEnoughToLeaveTheSectionBehind() {
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        assertTrue(BlockScan.walkingAwayGoal(0).isInGoal(108, -30, 8));
+        assertTrue(BlockScan.walkingAwayGoal(1).isInGoal(8, 50, 108));
+        assertTrue(BlockScan.walkingAwayGoal(2).isInGoal(-92, 50, 8));
+        assertTrue(BlockScan.walkingAwayGoal(3).isInGoal(8, 50, -92));
+        assertFalse(BlockScan.walkingAwayGoal(0).isInGoal(108, LOWEST_LEVEL - 1, 8));
+        assertTrue(new BlockScan.MiningArea(8, 8, RADIUS).isFarFrom(108, 8));
+    }
+
+    @Test
+    void reallyWalksAwayThroughSolidRock() throws ReflectiveOperationException {
+        world.clear();
+        world = new TestWorld(8);
+        world.layer(-40, -20, BlockRegistry.DEEPSLATE);
+        BlockPos start = new BlockPos(8, -30, 8);
+        airAt(start);
+        PretendBot bot = new PretendBot(world, start, DEEPSLATE);
+
+        assertTrue(bot.followPathTo(BlockScan.walkingAwayGoal(0)), "got to " + bot.at);
+
+        assertEquals(108, bot.at.x());
     }
 
     // ----------------------------------------------------------------------------------------

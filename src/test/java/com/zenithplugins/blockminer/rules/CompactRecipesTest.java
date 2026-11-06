@@ -51,6 +51,16 @@ class CompactRecipesTest {
     }
 
     @Test
+    void getsBackEnoughBlocksToEndUpWithAStack() {
+        assertEquals(0, CompactRecipes.blocksToGetBack(64, 64));
+        assertEquals(0, CompactRecipes.blocksToGetBack(100, 64));
+        assertEquals(1, CompactRecipes.blocksToGetBack(63, 64));
+        assertEquals(1, CompactRecipes.blocksToGetBack(55, 64));
+        assertEquals(2, CompactRecipes.blocksToGetBack(54, 64));
+        assertEquals(8, CompactRecipes.blocksToGetBack(0, 64));
+    }
+
+    @Test
     void recognisesInputsButNotBlocks() {
         assertTrue(CompactRecipes.isInput("diamond"));
         assertTrue(CompactRecipes.isInput("gold_nugget"));

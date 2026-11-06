@@ -23,6 +23,7 @@ final class StorageErrand {
     // As many as an ender chest holds, since any number of them could be part-full with little room left.
     private static final int MAX_SHULKERS_PER_RUN = 27;
     private static final int STACK_MOVE_TIMEOUT_MS = 3_000;
+    private static final int SHULKER_LOOK_MS = 3_000;
 
     private final BlockMinerModule module;
     private final Bot bot;
@@ -105,13 +106,12 @@ final class StorageErrand {
 
     private ItemData takeShulkerToFill() {
         bot.openEnderChest();
-        List<ItemStack> storing = slotsToStore().stream().map(bot::stackAt).toList();
-        List<SlotStack> chest = bot.containerSlots().stream().map(slot -> new SlotStack(slot, bot.stackAt(slot))).toList();
-        int shulkerSlot = StorageRules.shulkerToFill(
-            chest, storing, InventoryPlan.itemsToStore(TargetItems.itemsFor(PLUGIN_CONFIG.wantedItems), PLUGIN_CONFIG.stillToStore));
+        int shulkerSlot = shulkerToFillOnceItsLoaded();
         if (shulkerSlot == -1) {
+            long seen = bot.containerSlots().stream().map(bot::stackAt).filter(StorageRules::isShulker).count();
             bot.closeContainer();
-            throw ErrandFailed.stop("The ender chest has no shulker boxes with room left");
+            throw ErrandFailed.stop("The ender chest has no shulker boxes with room left. It can see " + seen
+                + " shulker boxes in there, and they're all full, or holding something other than what it's storing");
         }
 
         space.ensureFreeSlot();
@@ -124,6 +124,22 @@ final class StorageErrand {
         }
         bot.closeContainer();
         return shulkerItem;
+    }
+
+    /**
+     * The one to fill next, or -1 if there really isn't one. Not finding one turns the bot off, so it's worth giving
+     * it a moment to be sure, as a chest can look empty for a moment after it opens.
+     */
+    int shulkerToFillOnceItsLoaded() {
+        bot.waitFor(() -> shulkerToFill() != -1, SHULKER_LOOK_MS);
+        return shulkerToFill();
+    }
+
+    private int shulkerToFill() {
+        List<ItemStack> storing = slotsToStore().stream().map(bot::stackAt).toList();
+        List<SlotStack> chest = bot.containerSlots().stream().map(slot -> new SlotStack(slot, bot.stackAt(slot))).toList();
+        return StorageRules.shulkerToFill(
+            chest, storing, InventoryPlan.itemsToStore(TargetItems.itemsFor(PLUGIN_CONFIG.wantedItems), PLUGIN_CONFIG.stillToStore));
     }
 
     /**

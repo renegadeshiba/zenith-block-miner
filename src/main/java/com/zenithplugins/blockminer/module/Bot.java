@@ -75,6 +75,7 @@ final class Bot {
     private static final int ITEM_ENTITY_STACK_METADATA = 8;
     private static final int POLL_MS = 50;
     private static final int MAX_OPEN_ATTEMPTS = 5;
+    private static final int CONTENTS_WAIT_MS = 2_000;
 
     private static final int PLAYER_SLOTS = 36;
     private static final int HOTBAR_SLOTS = 9;
@@ -296,6 +297,17 @@ final class Bot {
         sleep(CLICK_PACING_MS);
     }
 
+    /**
+     * Clicks a slot and waits for the server to go along with it. Zenith doesn't predict putting one down, and on a
+     * laggy connection, a click based on an out-of-date cursor gets refused.
+     */
+    void clickAndConfirm(int slot, ClickItemAction action, BooleanSupplier confirmed) {
+        click(slot, action);
+        if (!waitFor(confirmed, ACTION_TIMEOUT_MS)) {
+            throw ErrandFailed.retry("A click on slot " + slot + " didn't go through");
+        }
+    }
+
     /** Throws a whole stack on the ground. False if it couldn't be dropped. */
     boolean dropStack(int slot) {
         var packet = new DropItem(openContainerId(), slot, DropItemAction.DROP_SELECTED_STACK).packet();
@@ -413,7 +425,10 @@ final class Bot {
         for (int attempt = 0; attempt < MAX_OPEN_ATTEMPTS; attempt++) {
             try {
                 run(() -> BARITONE.rightClickBlock(pos[0], pos[1], pos[2]), ACTION_TIMEOUT_MS, "Opening " + name);
-                if (waitFor(Bot::containerIsReady, ACTION_TIMEOUT_MS)) return;
+                if (waitFor(Bot::containerIsReady, ACTION_TIMEOUT_MS)) {
+                    waitFor(Bot::contentsHaveArrived, CONTENTS_WAIT_MS);
+                    return;
+                }
             } catch (ErrandFailed e) {
                 module.debug("{} (attempt {}/{})", e.getMessage(), attempt + 1, MAX_OPEN_ATTEMPTS);
             }
@@ -430,6 +445,14 @@ final class Bot {
         var typeInfo = ContainerTypeInfoRegistry.REGISTRY.get(container.getType());
         int expectedSize = typeInfo == null ? PLAYER_SLOTS : typeInfo.totalSlots();
         return container.getContainerId() == openId && container.getSize() >= expectedSize;
+    }
+
+    /**
+     * What's in a container comes just after the screen opens, and until then it looks empty. A container has
+     * no state ID until then, and a server always gives it one with its contents.
+     */
+    static boolean contentsHaveArrived() {
+        return inventory().getOpenContainerId() != 0 && inventory().getOpenContainer().getStateId() != 0;
     }
 
     /**

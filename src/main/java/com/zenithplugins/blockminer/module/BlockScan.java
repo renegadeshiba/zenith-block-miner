@@ -55,6 +55,9 @@ final class BlockScan {
     // pathfinder gets as many as Zenith's miner gives it.
     private static final int GOAL_CANDIDATES = 256;
     private static final int GOAL_BLOCKS = 64;
+    // Given more to choose from, the pathfinder goes for whichever is easiest to get to. With plenty about, there's
+    // always another that's easier than the ones above it, so it wanders off and leaves them behind.
+    private static final int NEAREST_TO_GO_FOR = 4;
     private static final int MAX_CHUNKS_AWAY = 32;
 
     // Y -58 in the overworld. Bedrock goes up to 4 above the bottom of the world, so that leaves a block
@@ -82,6 +85,10 @@ final class BlockScan {
 
     // Far enough for a good look at what comes into range, before deciding whether to go any further.
     private static final int EXPLORING_BLOCKS = 32;
+    // Far enough to be well clear of the section it's in, whatever the problem was there.
+    private static final int WALKING_AWAY_BLOCKS = 100;
+    // More than there can be on a level of a section.
+    private static final int ALL_ON_A_LEVEL = 8192;
     private static final int[][] DIRECTIONS = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}};
 
     /**
@@ -200,7 +207,8 @@ final class BlockScan {
      * are none left it moves on to the top of the next section. Going down, it never has to climb until
      * it's finished the whole section.
      *
-     * <p>Anything else is worth going to look for, so it goes for the nearest ones in the loaded chunks.
+     * <p>Anything else is worth going to look for, wherever it is in the loaded chunks. It clears what's around it
+     * as it goes: first what it can reach above it, and then only ever the next few nearest.
      *
      * @param outOfReach blocks it's already failed to get to
      * @return null if there's nothing it can go for in the loaded chunks
@@ -229,9 +237,16 @@ final class BlockScan {
             }
         }
 
-        int lowestLevel = lowestLevel();
-        List<BlockPos> blocks = choose(nearest(filter, GOAL_CANDIDATES, lowestLevel, Integer.MAX_VALUE, null), outOfReach, context);
-        return blocks.isEmpty() ? null : new MiningGoal(goalInBlocks(blocks, lowestLevel), blocks, false, null);
+        int botX = MathHelper.floorI(player.getX());
+        int botY = MathHelper.floorI(player.getY());
+        int botZ = MathHelper.floorI(player.getZ());
+        BlockPos overhead = blockToMineOverhead(filter, botX, botY, botZ, outOfReach, context);
+        if (overhead != null) return new MiningGoal(null, List.of(overhead), true, null);
+
+        List<BlockPos> blocks = choose(nearest(filter, GOAL_CANDIDATES, lowestLevel(), Integer.MAX_VALUE, null), outOfReach, context);
+        if (blocks.isEmpty()) return null;
+        if (blocks.size() > NEAREST_TO_GO_FOR) blocks = blocks.subList(0, NEAREST_TO_GO_FOR);
+        return new MiningGoal(goalInOrUnderBlocks(blocks, botX, botY, botZ, context), blocks, false, null);
     }
 
     /** What to do next in this section, or null if there's nothing left to do in it. */
@@ -375,14 +390,28 @@ final class BlockScan {
         }
     }
 
+    /** What it's after on this section's level, for when it's decided that it can't get to any more of it. */
+    static List<BlockPos> blocksOnLevel(BlockOptionalMetaLookup filter, MiningArea area) {
+        return nearest(filter, ALL_ON_A_LEVEL, area.level(), area.level() + 1, area);
+    }
+
     /** Somewhere further off in this direction, to bring more chunks into range when none of them help. */
     static Goal exploringGoal(int direction) {
+        return goalThisWay(direction, EXPLORING_BLOCKS);
+    }
+
+    /** Well away from here in this direction, at any height, for when it can't get to anything from here. */
+    static Goal walkingAwayGoal(int direction) {
+        return goalThisWay(direction, WALKING_AWAY_BLOCKS);
+    }
+
+    private static Goal goalThisWay(int direction, int blocks) {
         PlayerCache player = CACHE.getPlayerCache();
         int[] heading = DIRECTIONS[Math.floorMod(direction, DIRECTIONS.length)];
         return new AboveLowestLevel(
             new GoalXZ(
-                MathHelper.floorI(player.getX()) + heading[0] * EXPLORING_BLOCKS,
-                MathHelper.floorI(player.getZ()) + heading[1] * EXPLORING_BLOCKS),
+                MathHelper.floorI(player.getX()) + heading[0] * blocks,
+                MathHelper.floorI(player.getZ()) + heading[1] * blocks),
             lowestLevel(),
             PRESSING_ON_WEIGHT);
     }
@@ -420,11 +449,34 @@ final class BlockScan {
             weight);
     }
 
-    private static Goal goalInBlocks(List<BlockPos> blocks, int lowestLevel) {
-        return new AboveLowestLevel(
-            new GoalComposite(blocks.stream().map(GoalTwoBlocks::new).toArray(Goal[]::new)),
-            lowestLevel,
-            PRESSING_ON_WEIGHT);
+    /** To stand in one of these blocks, or on the floor under one that it can mine from there. */
+    private static Goal goalInOrUnderBlocks(List<BlockPos> blocks, int botX, int botY, int botZ, CalculationContext context) {
+        List<Goal> goals = new ArrayList<>();
+        for (BlockPos pos : blocks) {
+            goals.add(new GoalTwoBlocks(pos));
+            Integer feet = spotUnder(pos, context);
+            // If it's there already then it couldn't mine it from there after all, and it would be there forever.
+            if (feet != null && !(pos.x() == botX && feet == botY && pos.z() == botZ)) {
+                goals.add(new GoalBlock(pos.x(), feet, pos.z()));
+            }
+        }
+        return new AboveLowestLevel(new GoalComposite(goals.toArray(Goal[]::new)), lowestLevel(), PRESSING_ON_WEIGHT);
+    }
+
+    /**
+     * How high its feet would be, standing on the first floor below this block to mine it straight above it, or
+     * null if it can't do that. It couldn't stand in a block in a ceiling, however it went about it.
+     */
+    private static @Nullable Integer spotUnder(BlockPos pos, CalculationContext context) {
+        if (World.getBlock(pos.x(), pos.y() + 1, pos.z()).fallingBlock()) return null;
+        if (!RoomBeside.canMine(new int[]{pos.x(), pos.y(), pos.z()}, context)) return null;
+        for (int below = 1; below <= ROOM_HEIGHT; below++) {
+            int y = pos.y() - below;
+            if (World.getBlock(pos.x(), y, pos.z()).isAir()) continue;
+            int feet = y + 1;
+            return pos.y() - feet >= 2 && MovementHelper.canWalkOn(pos.x(), y, pos.z()) ? feet : null;
+        }
+        return null;
     }
 
     /**

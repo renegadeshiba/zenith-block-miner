@@ -18,7 +18,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.function.BooleanSupplier;
 
 import static com.zenith.Globals.CONFIG;
 import static com.zenithplugins.blockminer.BlockMinerPlugin.PLUGIN_CONFIG;
@@ -160,29 +159,22 @@ final class InventorySpace {
 
             int pickedUp = (source.stack().getAmount() + 1) / 2;
             int toPlace = Math.min(pickedUp, Math.min(wanted - filled, emptySlots.size()));
-            clickAndConfirm(source.slot(), ClickItemAction.RIGHT_CLICK, () -> bot.cursorAmount() == pickedUp);
+            bot.clickAndConfirm(source.slot(), ClickItemAction.RIGHT_CLICK, () -> bot.cursorAmount() == pickedUp);
             int onCursor = pickedUp;
             int placed = 0;
             while (placed < toPlace && !emptySlots.isEmpty()) {
                 int slot = emptySlots.poll();
                 if (!bot.isEmptySlot(slot)) continue;
                 int left = onCursor - 1;
-                clickAndConfirm(slot, ClickItemAction.RIGHT_CLICK, () -> !bot.isEmptySlot(slot) && bot.cursorAmount() == left);
+                bot.clickAndConfirm(slot, ClickItemAction.RIGHT_CLICK, () -> !bot.isEmptySlot(slot) && bot.cursorAmount() == left);
                 onCursor = left;
                 placed++;
             }
-            if (onCursor > 0) clickAndConfirm(source.slot(), ClickItemAction.LEFT_CLICK, bot::cursorIsEmpty);
+            if (onCursor > 0) bot.clickAndConfirm(source.slot(), ClickItemAction.LEFT_CLICK, bot::cursorIsEmpty);
             filled += placed;
             if (placed == 0) break;
         }
         return filled;
-    }
-
-    private void clickAndConfirm(int slot, ClickItemAction action, BooleanSupplier confirmed) {
-        bot.click(slot, action);
-        if (!bot.waitFor(confirmed, Bot.ACTION_TIMEOUT_MS)) {
-            throw ErrandFailed.retry("A click on slot " + slot + " while filling the inventory didn't go through");
-        }
     }
 
     private SlotStack largestStackOf(int itemId) {

@@ -113,8 +113,10 @@ an errand lets the errand finish first, so a shulker box isn't left on the groun
 
 **The bot never goes below Y -58**, whatever it's after, which keeps its floor above the bedrock. That's 6
 blocks above the bottom of the world, so it's Y 6 in the Nether. If it starts lower than that, it climbs up
-first. Blocks below that are left alone, and so is an ender chest down there. Lava is common that far down.
-It won't break anything touching lava, but it's the most dangerous place it goes.
+first. Blocks below that are left alone, and so is an ender chest down there. The one exception is that if
+there's no other way past something, like lava all around it, a path can pass just below that on its way
+somewhere. Lava is common that far down. It won't break anything touching lava, but it's the most dangerous
+place it goes.
 
 The pathfinder's `allowBreak` setting has to be on. The bot decides where to go itself rather than using
 ZenithProxy's own miner, which can't be told to stay above a height. Left alone, that digs straight down
@@ -144,7 +146,9 @@ touching lava or water, or a container. It doesn't go back for what that leaves,
 cave under them that it can't stand on, so expect a few bits left hanging.
 
 **Blocks worth looking for**, such as ores, aren't kept to a section, since there wouldn't be many in it. It
-goes for the nearest ones in the loaded chunks, wherever they are. If none are loaded, it goes looking for
+goes for the nearest few in the loaded chunks, at any height, and clears what's around it before moving on. It
+mines anything it can reach straight above it without moving, digging through what's in the way, and for ore
+in a ceiling, it stands underneath. If none are loaded, it goes looking for
 more, heading off in a straight line until some come into range, and the status says `Looking for ...`.
 So don't leave the bot mining somewhere it shouldn't dig.
 
@@ -243,6 +247,12 @@ The stack it keeps is the material, not the block, because diamonds are what can
 it mines. So when mining diamond ore, it crafts everything beyond one stack of diamonds into blocks, and
 the blocks go in the shulker box. A few left over that aren't enough for a block stay with that stack.
 
+It fills the grid as full as it'll go and shift-clicks the result, which crafts it all at once, so a full
+inventory takes a couple of seconds. The recipe book shares out all of a material, including what it means to
+keep, so it crafts all of it and then turns a few blocks back to get its stack back. If a recipe isn't in the
+account's recipe book, or the recipe book doesn't do anything, it moves whole stacks into the grid by hand
+instead, which takes about 20 seconds.
+
 The bot uses a crafting table within 5 blocks, or places a carried one. Either way, it breaks the table
 and collects it afterwards, even if crafting fails, so it has one for next time. That includes a table
 that was already there, so don't count on one you've set up staying put. If it has no table at all, it
@@ -288,17 +298,37 @@ The bot stops mining, turns itself off and sends a notification when only you ca
 - no tool of the kind that what you asked for needs
 - no ender chest available
 - the inventory is full of things it isn't allowed to store
-- it's stuck, and can't climb out or keeps getting stuck again
+- it's stuck, and can't walk away or climb out, or keeps getting stuck again
 
 Anything else, such as a path it can't find, gets tried again after 30 seconds, up to three times in a
 row before it stops the same way. Run `blockminer on` once it's sorted.
 
-If the bot can't get to anything it can mine, such as from a pit in the bedrock, it builds its way out with
-blocks it's carrying. It also does this if it can't mine out a spot to put something down. The pathfinder only
-builds with blocks on its `acceptableThrowawayItems` list, which doesn't include things like cobbled
-deepslate, so the bot adds common solid blocks it's carrying to that list just until it's out, and then
-takes off what it added. If it's carrying nothing it can use, you'll get a notification saying where it's
-stuck.
+If the bot can't find a way to something, it tries these in order:
+
+1. **Building.** It tries again, this time allowed to place blocks it's carrying, including what it's been
+   mining. The pathfinder only builds with blocks on its `acceptableThrowawayItems` list, which doesn't include
+   things like cobbled deepslate, so the bot adds common solid blocks it's carrying to that list until a path
+   works, and then takes off what it added.
+2. **Moving on.** What's left at the end of a level is often hard to get to, like blocks next to lava. After 3
+   tries it gives up on what's left of that level and goes on to the next. That doesn't count as being stuck.
+3. **Walking away.** If it can't get to anything at all, it walks 100 blocks in a straight line, trying each
+   direction in turn, and starts a new section from where it ends up.
+4. **Building up.** If it can't walk away in any direction, it builds its way 6 blocks up, which also gets it
+   out of a pit in the bedrock.
+
+You'll get a notification saying where it is if none of that works, or if it gets stuck 6 times in a row
+without getting any mining done in between. Each of these steps also goes in the log, so that's the place to
+look if you want to know what happened while you were away.
+
+**It only builds when it has to.** Left to build whenever it likes, the pathfinder climbs between levels on
+pillars out in the open instead of digging stairs through the rock, and an arrow or a creeper up there is a
+long fall with the whole inventory.
+
+**It leaves the blocks it places alone**, even though they look just like what it's after, so it doesn't pull
+down what it built. It only remembers them until ZenithProxy restarts, and the pathfinder can still break one
+that's directly in its way when it's walking somewhere.
+
+It also builds its way up if it can't mine out a spot to put something down.
 
 If the bot disconnects or a player takes over with a shulker box still placed, or just after breaking
 one, it remembers where and goes back for it when it next runs, whether it's still standing or lying on

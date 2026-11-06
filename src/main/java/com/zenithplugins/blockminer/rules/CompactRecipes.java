@@ -55,4 +55,9 @@ public final class CompactRecipes {
         int keep = isTarget ? stackSize : 0;
         return Math.max(0, total - keep) / INPUT_COUNT;
     }
+
+    /** How many blocks to turn back into the material, to end up with a stack of it again. */
+    public static int blocksToGetBack(int held, int stackSize) {
+        return Math.max(0, stackSize - held + INPUT_COUNT - 1) / INPUT_COUNT;
+    }
 }

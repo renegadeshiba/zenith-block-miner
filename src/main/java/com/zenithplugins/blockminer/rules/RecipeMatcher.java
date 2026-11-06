@@ -3,10 +3,12 @@ package com.zenithplugins.blockminer.rules;
 import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.RecipeDisplay;
 import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.ShapedCraftingRecipeDisplay;
 import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.ShapelessCraftingRecipeDisplay;
+import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.slot.CompositeSlotDisplay;
 import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.slot.EmptySlotDisplay;
 import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.slot.ItemSlotDisplay;
 import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.slot.ItemStackSlotDisplay;
 import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.slot.SlotDisplay;
+import org.geysermc.mcprotocollib.protocol.data.game.recipe.display.slot.WithRemainderSlotDisplay;
 
 import java.util.List;
 
@@ -32,20 +34,28 @@ public final class RecipeMatcher {
         } else {
             return false;
         }
-        if (itemIdOf(result) != outputId) return false;
+        if (!isItem(result, outputId)) return false;
 
         boolean usesInput = false;
         for (SlotDisplay ingredient : ingredients) {
             if (ingredient instanceof EmptySlotDisplay) continue;
-            if (itemIdOf(ingredient) != inputId) return false;
+            if (!isItem(ingredient, inputId)) return false;
             usesInput = true;
         }
         return usesInput;
     }
 
-    private static int itemIdOf(SlotDisplay slot) {
-        if (slot instanceof ItemSlotDisplay item) return item.item();
-        if (slot instanceof ItemStackSlotDisplay stack) return stack.itemStack().getId();
-        return -1;
+    /**
+     * A server sends an ingredient as a list of the items that would do, even when that's a list of one, and
+     * something that leaves an item behind in the grid, like a bucket, comes wrapped up with that as well.
+     */
+    private static boolean isItem(SlotDisplay slot, int itemId) {
+        if (slot instanceof ItemSlotDisplay item) return item.item() == itemId;
+        if (slot instanceof ItemStackSlotDisplay stack) return stack.itemStack().getId() == itemId;
+        if (slot instanceof CompositeSlotDisplay composite) {
+            return composite.contents().stream().anyMatch(content -> isItem(content, itemId));
+        }
+        if (slot instanceof WithRemainderSlotDisplay remainder) return isItem(remainder.input(), itemId);
+        return false;
     }
 }

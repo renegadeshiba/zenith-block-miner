@@ -14,7 +14,9 @@ import com.zenith.mc.block.BlockPos;
 import com.zenith.mc.block.BlockRegistry;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Follows the paths from ZenithProxy's real path search through a {@link TestWorld}, breaking and placing
@@ -31,6 +33,8 @@ final class PretendBot {
     int bedrockBroken;
     int lowestY;
     int searches;
+    int blocksPlaced;
+    final Set<BlockPos> placed = new HashSet<>();
 
     PretendBot(TestWorld world, BlockPos start, BlockOptionalMetaLookup wanted) {
         this.world = world;
@@ -84,7 +88,7 @@ final class PretendBot {
         if (sameColumn && to.y() > from.y()) {
             // Pillaring: it jumps, and puts a block where it was standing.
             clear(to.x(), to.y() + 1, to.z());
-            world.set(from.x(), from.y(), from.z(), BlockRegistry.COBBLED_DEEPSLATE);
+            place(from.x(), from.y(), from.z());
         } else if (sameColumn) {
             clear(to.x(), to.y(), to.z());
         } else {
@@ -92,7 +96,17 @@ final class PretendBot {
             int top = Math.max(from.y(), to.y());
             for (int y = to.y(); y <= top + 1; y++) clear(to.x(), y, to.z());
             if (to.y() > from.y()) clear(from.x(), from.y() + 2, from.z());
+            // Bridging: it puts a block down in front of it to walk on.
+            if (to.y() == from.y() && World.getBlock(new BlockPos(to.x(), to.y() - 1, to.z())).isAir()) {
+                place(to.x(), to.y() - 1, to.z());
+            }
         }
+    }
+
+    private void place(int x, int y, int z) {
+        world.set(x, y, z, BlockRegistry.COBBLED_DEEPSLATE);
+        blocksPlaced++;
+        placed.add(new BlockPos(x, y, z));
     }
 
     private void clear(int x, int y, int z) {

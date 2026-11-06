@@ -11,7 +11,11 @@ import com.zenith.mc.item.ItemData;
 import com.zenith.mc.item.ItemRegistry;
 import com.zenithplugins.blockminer.BlockMinerConfig;
 import com.zenithplugins.blockminer.BlockMinerPlugin;
+import org.geysermc.mcprotocollib.protocol.data.ProtocolState;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand;
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemOnPacket;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -414,12 +418,21 @@ class ChoosingHowToMineTest {
     // not being able to get somewhere
     // ----------------------------------------------------------------------------------------
 
-    private void failPathsUntilClimbing() throws Exception {
-        for (int attempt = 0; attempt < 3; attempt++) {
+    private void failPathsUntil(String status) throws Exception {
+        for (int attempt = 0; attempt < 12; attempt++) {
+            if (module.status().startsWith(status) || module.status().startsWith("Stopped")) break;
             waitForPath();
             pathEnds(false);
         }
         tick();
+    }
+
+    private void failPathsUntilClimbing() throws Exception {
+        failPathsUntil("Climbing");
+    }
+
+    private void failPathsUntilWalkingAway() throws Exception {
+        failPathsUntil("Walking away");
     }
 
     private static boolean allowedToBuildWith(String item) {
@@ -521,6 +534,22 @@ class ChoosingHowToMineTest {
     }
 
     @Test
+    void walkingAwayComesBeforeErrandsToo() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        failPathsUntilWalkingAway();
+
+        for (int slot = INVENTORY_SLOT; slot < 36; slot++) setSlot(slot, ItemRegistry.COBBLED_DEEPSLATE);
+        for (int slot = 37; slot <= LAST_SLOT; slot++) setSlot(slot, ItemRegistry.COBBLED_DEEPSLATE);
+        tick(5);
+
+        assertFalse(module.errandRunning());
+        assertTrue(followingAPath());
+        assertTrue(module.status().startsWith("Walking away"), "status: " + module.status());
+    }
+
+    @Test
     void goesBackToMiningAfterClimbingOut() throws Exception {
         want("cobbled_deepslate");
         setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
@@ -600,15 +629,388 @@ class ChoosingHowToMineTest {
         setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
         TestWorld.putBotAt(8.5, -30, 8.5);
 
-        for (int time = 0; time < 3; time++) {
-            failPathsUntilClimbing();
-            assertTrue(module.status().startsWith("Climbing"), "status: " + module.status());
+        // Walking away works every time, but it never gets any mining done.
+        for (int time = 0; time < 5; time++) {
+            failPathsUntilWalkingAway();
+            assertTrue(module.status().startsWith("Walking away"), "status: " + module.status());
+            waitForPath();
+            pathEnds(true);
+            // It gets some of the way to the top of the new section, which isn't getting any mining done.
+            waitForPath();
             pathEnds(true);
         }
-        failPathsUntilClimbing();
+        failPathsUntil("Walking away");
 
         assertFalse(BlockMinerPlugin.PLUGIN_CONFIG.enabled);
         assertTrue(module.status().startsWith("Stopped: It keeps getting stuck"), "status: " + module.status());
+    }
+
+    @Test
+    void gettingSomeMiningDoneMeansItsNotStuckAnyMore() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+
+        for (int time = 0; time < 8; time++) {
+            module.blocksChanged();
+            TestWorld.putBotAt(8.5, -30, 8.5);
+            failPathsUntilWalkingAway();
+            waitForPath();
+            // It got to the top of a section, and mines one thing.
+            putBotOnTheTopLevel();
+            pathEnds(true);
+            waitForMiningABlock();
+            pathEnds(true);
+        }
+
+        assertTrue(BlockMinerPlugin.PLUGIN_CONFIG.enabled, "status: " + module.status());
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // building only when it has to
+    // ----------------------------------------------------------------------------------------
+
+    @Test
+    void doesntBuildUntilItHasTo() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        waitForPath();
+
+        assertFalse(allowedToBuildWith("cobbled_deepslate"), "it would climb by building pillars out in the open");
+    }
+
+    @Test
+    void triesAgainWithBlocksBeforeGivingUpOnAnything() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+
+        pathEnds(false);
+
+        assertTrue(allowedToBuildWith("cobbled_deepslate"));
+        assertTrue(outOfReach().isEmpty(), "it might be able to get there now");
+        assertEquals("Waiting: can't find a way without building, so trying again with blocks", module.status());
+        waitForPath();
+        assertTrue(currentGoal().isInGoal(8, -7, 8), "the same place as before");
+    }
+
+    @Test
+    void givesUpOnThemIfItStillCantGetThereWithBlocks() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+        pathEnds(false);
+        waitForPath();
+
+        pathEnds(false);
+
+        assertFalse(outOfReach().isEmpty());
+        waitForPath();
+        assertFalse(currentGoal().isInGoal(8, -7, 8));
+        assertTrue(allowedToBuildWith("cobbled_deepslate"), "until something works");
+    }
+
+    @Test
+    void doesntTryAgainIfItCouldBuildAlready() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.STONE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+
+        pathEnds(false);
+
+        assertFalse(outOfReach().isEmpty(), "stone is on the list already, so nothing's changed");
+    }
+
+    @Test
+    void goesBackToDiggingOnceAPathWorks() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+        pathEnds(false);
+        waitForPath();
+        assertTrue(allowedToBuildWith("cobbled_deepslate"));
+
+        pathEnds(true);
+
+        assertFalse(allowedToBuildWith("cobbled_deepslate"));
+    }
+
+    @Test
+    void triesBuildingAgainTheNextTimeItCantFindAWay() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+        pathEnds(false);
+        waitForPath();
+        pathEnds(true);
+        waitForPath();
+
+        pathEnds(false);
+
+        assertTrue(allowedToBuildWith("cobbled_deepslate"));
+        assertTrue(outOfReach().isEmpty());
+    }
+
+    private void clicksOn(int x, int y, int z, Direction face) {
+        module.getClientPacketHandlerCodec().getStateCodecs().get(ProtocolState.GAME).handlePostOutgoing(
+            new ServerboundUseItemOnPacket(x, y, z, face, Hand.MAIN_HAND, 0.5f, 0.5f, 0.5f, false, false, 0), null);
+    }
+
+    @Test
+    void leavesAloneABlockItPlaced() throws Exception {
+        want("cobbled_deepslate");
+        // It clicks on the top of the block below, and then the one it put there turns up.
+        world.set(8, -5, 8, BlockRegistry.AIR);
+        clicksOn(8, -6, 8, Direction.UP);
+        world.set(8, -5, 8, BlockRegistry.COBBLED_DEEPSLATE);
+        putBotOnTheTopLevel();
+
+        // Whatever it does first: it would give up on mining a block here in the end, as nothing can break it.
+        tickUntil(() -> followingAPath() || miningABlock(), "doing something");
+
+        assertFalse(miningABlock(), "that's the first thing above it");
+        assertEquals("Mining", module.status());
+        assertFalse(blocksItsGoingFor().contains(new BlockPos(8, -5, 8)));
+    }
+
+    @Test
+    void stillMinesTheSameBlockIfItDidntPlaceIt() throws Exception {
+        want("cobbled_deepslate");
+        world.set(8, -5, 8, BlockRegistry.COBBLED_DEEPSLATE);
+        putBotOnTheTopLevel();
+
+        waitForMiningABlock();
+
+        assertEquals(List.of(new BlockPos(8, -5, 8)), blocksItsGoingFor());
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // what's left of a level
+    // ----------------------------------------------------------------------------------------
+
+    private void onTheTopLevelWithNothingAboveIt() {
+        for (int y = -5; y <= -1; y++) world.set(8, y, 8, BlockRegistry.AIR);
+        putBotOnTheTopLevel();
+    }
+
+    @Test
+    void whatsLeftOfALevelThatItCantGetToDoesntMakeItStuck() throws Exception {
+        want("cobbled_deepslate");
+        onTheTopLevelWithNothingAboveIt();
+
+        for (int attempt = 0; attempt < 3; attempt++) {
+            waitForPath();
+            assertEquals("Mining", module.status());
+            pathEnds(false);
+            assertEquals("Waiting: can't get to what's left of this level", module.status());
+        }
+
+        waitForPath();
+        assertEquals(WALKING, module.status());
+        assertEquals(-14, miningArea().level(), "it's moved on to the next level");
+        assertTrue(BlockMinerPlugin.PLUGIN_CONFIG.enabled);
+    }
+
+    @Test
+    void onlyGivesUpOnALevelAfterFailingSeveralTimesInARow() throws Exception {
+        want("cobbled_deepslate");
+        onTheTopLevelWithNothingAboveIt();
+        waitForPath();
+        pathEnds(false);
+        waitForPath();
+        pathEnds(false);
+        waitForPath();
+        pathEnds(true);
+        waitForPath();
+
+        pathEnds(false);
+
+        assertEquals(-7, miningArea().level());
+        assertEquals(3 * 64, outOfReach().size(), "just what it's failed to get to");
+    }
+
+    @Test
+    void startsCountingAgainOnTheNextLevel() throws Exception {
+        want("cobbled_deepslate");
+        onTheTopLevelWithNothingAboveIt();
+        for (int attempt = 0; attempt < 3; attempt++) {
+            waitForPath();
+            pathEnds(false);
+        }
+        // It's ended up on the next level with nothing having gone right yet, such as by falling down a hole.
+        for (int y = -12; y <= -8; y++) world.set(8, y, 8, BlockRegistry.AIR);
+        TestWorld.putBotAt(8.5, -14, 8.5);
+        waitForPath();
+        assertEquals("Mining", module.status());
+        assertEquals(-14, miningArea().level());
+        int before = outOfReach().size();
+
+        pathEnds(false);
+
+        assertEquals(-14, miningArea().level());
+        assertEquals(before + 64, outOfReach().size(), "it hasn't given up on this one as well");
+    }
+
+    @Test
+    void itsStuckIfItCantGetToTheNextLevelEither() throws Exception {
+        want("cobbled_deepslate");
+        onTheTopLevelWithNothingAboveIt();
+        for (int attempt = 0; attempt < 3; attempt++) {
+            waitForPath();
+            pathEnds(false);
+        }
+
+        failPathsUntilWalkingAway();
+
+        assertTrue(module.status().startsWith("Walking away"), "status: " + module.status());
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // walking away
+    // ----------------------------------------------------------------------------------------
+
+    @Test
+    void goingForTheNearestTakesMoreFailuresToBeStuck() throws Exception {
+        // Only a few at a time get tried, so that's not many blocks that it can't get to.
+        for (int x = 20; x <= 40; x++) {
+            for (int z = 0; z <= 4; z++) world.set(x, -30, z, BlockRegistry.ANCIENT_DEBRIS);
+        }
+        want("ancient_debris");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        for (int attempt = 0; attempt < 11; attempt++) {
+            waitForPath();
+            pathEnds(false);
+            assertTrue(module.status().startsWith("Waiting"), "status after " + attempt + ": " + module.status());
+        }
+        waitForPath();
+        pathEnds(false);
+
+        assertTrue(module.status().startsWith("Walking away"), "status: " + module.status());
+    }
+
+    @Test
+    void minesOreAboveItWithoutWalking() throws Exception {
+        world.set(8, -28, 8, BlockRegistry.ANCIENT_DEBRIS);
+        want("ancient_debris");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        waitForMiningABlock();
+
+        assertEquals(List.of(new BlockPos(8, -28, 8)), blocksItsGoingFor());
+        assertEquals("Mining", module.status());
+    }
+
+    @Test
+    void walksAwayWhenItCantGetToAnything() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        failPathsUntilWalkingAway();
+
+        assertEquals("Walking away from [8, -30, 8], as it can't get to anything from there", module.status());
+        waitForPath();
+        assertTrue(currentGoal().isInGoal(108, -30, 8));
+        assertTrue(currentGoal().isInGoal(108, 40, 8), "at any height");
+        assertFalse(currentGoal().isInGoal(108, -59, 8), "apart from below the lowest level");
+        assertTrue(BlockMinerPlugin.PLUGIN_CONFIG.enabled);
+    }
+
+    @Test
+    void startsANewSectionFromWhereverItWalksTo() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        failPathsUntilWalkingAway();
+        waitForPath();
+        assertFalse(outOfReach().isEmpty());
+
+        TestWorld.putBotAt(70.5, -30, 8.5);
+        pathEnds(true);
+
+        assertSectionCentredOn(70, 8);
+        assertEquals(-7, miningArea().level(), "from the top");
+        assertTrue(outOfReach().isEmpty(), "nothing that was out of reach from where it was has to be from here");
+        assertEquals(WALKING, module.status());
+    }
+
+    @Test
+    void itsWalkedAwayIfItGotFarEnoughBeforeThePathFailed() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        failPathsUntilWalkingAway();
+        waitForPath();
+
+        TestWorld.putBotAt(32.5, -30, 8.5);
+        pathEnds(false);
+
+        assertSectionCentredOn(32, 8);
+        assertEquals(WALKING, module.status());
+    }
+
+    @Test
+    void itHasntWalkedAwayIfItDidntGetFarEnough() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        failPathsUntilWalkingAway();
+        waitForPath();
+
+        TestWorld.putBotAt(31.5, -30, 8.5);
+        pathEnds(false);
+
+        assertTrue(module.status().startsWith("Walking away"), "status: " + module.status());
+        assertFalse(outOfReach().isEmpty());
+    }
+
+    @Test
+    void triesEveryWayBeforeBuildingUp() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        failPathsUntilWalkingAway();
+
+        int[][] ends = {{108, 8}, {8, 108}, {-92, 8}, {8, -92}};
+        for (int[] end : ends) {
+            assertTrue(module.status().startsWith("Walking away"), "status: " + module.status());
+            waitForPath();
+            assertTrue(currentGoal().isInGoal(end[0], -30, end[1]), "should be heading for " + end[0] + " " + end[1]);
+            pathEnds(false);
+        }
+
+        assertEquals("Climbing out from [8, -30, 8]", module.status());
+        waitForPath();
+        assertEquals(new GoalY(-24), currentGoal());
+        assertTrue(allowedToBuildWith("cobbled_deepslate"));
+    }
+
+    @Test
+    void canBuildToWalkAway() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        failPathsUntilWalkingAway();
+
+        assertTrue(allowedToBuildWith("cobbled_deepslate"));
+    }
+
+    @Test
+    void stopsBuildingOnceItsWalkedAway() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        failPathsUntilWalkingAway();
+        waitForPath();
+
+        TestWorld.putBotAt(70.5, -30, 8.5);
+        pathEnds(true);
+
+        assertFalse(allowedToBuildWith("cobbled_deepslate"));
     }
 
     @Test
