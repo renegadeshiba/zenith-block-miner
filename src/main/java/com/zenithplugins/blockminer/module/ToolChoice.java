@@ -13,6 +13,7 @@ import org.jspecify.annotations.Nullable;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 import static com.zenith.Globals.BOT;
 import static com.zenith.Globals.CACHE;
@@ -39,17 +40,21 @@ final class ToolChoice {
         return CACHE.getPlayerCache().getPlayerInventory().get(OWN_HOTBAR_START + hotbarSlot);
     }
 
-    /** The blocks for these items where the tool matters, skipping any name that isn't a block. */
+    /**
+     * The blocks for these items where the tool matters, skipping any name that isn't a block. That includes ones
+     * where any tool will do, if they give nothing to a bare hand, like obsidian.
+     */
     static List<Block> blocksNeedingARightTool(Collection<String> items) {
-        return TargetItems.blocksNeedingARightTool(items).stream()
+        Set<String> needingAParticularTool = TargetItems.blocksNeedingARightTool(items);
+        return TargetItems.blocksToMine(items).stream()
             .map(BlockRegistry.REGISTRY::get)
             .filter(Objects::nonNull)
+            .filter(block -> needingAParticularTool.contains(block.name()) || block.requiresCorrectToolForDrops())
             .toList();
     }
 
     /** The first of these blocks that the pathfinder would mine with the wrong tool, or null if none. */
     static @Nullable Block firstWithWrongTool(List<Block> blocks, ToolNeed need) {
-        if (need == ToolNeed.ANY) return null;
         for (Block block : blocks) {
             if (!suits(hotbarStack(hotbarSlotFor(block)), block, need)) return block;
         }

@@ -1,5 +1,7 @@
 package com.zenithplugins.blockminer.module;
 
+import com.zenith.cache.data.entity.EntityLiving;
+import com.zenith.cache.data.entity.EntityStandard;
 import com.zenith.cache.data.inventory.Container;
 import com.zenith.event.client.ClientBotTick;
 import com.zenith.feature.pathfinder.PathingRequestFuture;
@@ -9,19 +11,25 @@ import com.zenith.mc.block.BlockPos;
 import com.zenith.mc.block.BlockRegistry;
 import com.zenith.mc.item.ItemData;
 import com.zenith.mc.item.ItemRegistry;
+import com.zenith.module.impl.KillAura;
+import com.zenith.util.ItemUtil;
 import com.zenithplugins.blockminer.BlockMinerConfig;
 import com.zenithplugins.blockminer.BlockMinerPlugin;
 import org.geysermc.mcprotocollib.protocol.data.ProtocolState;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand;
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
+import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponentTypes;
+import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponents;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemOnPacket;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -30,6 +38,7 @@ import java.util.function.BooleanSupplier;
 import static com.zenith.Globals.BARITONE;
 import static com.zenith.Globals.CACHE;
 import static com.zenith.Globals.CONFIG;
+import static com.zenith.Globals.MODULE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -67,6 +76,7 @@ class ChoosingHowToMineTest {
     @AfterEach
     void tearDown() {
         boolean zenithsMinerRan = BARITONE.getMineProcess().isActive();
+        CONFIG.client.extra.killAura.enabled = false;
         BlockMinerPlugin.PLUGIN_CONFIG.enabled = false;
         module.syncEnabledFromConfig();
         BARITONE.stop();
@@ -547,6 +557,129 @@ class ChoosingHowToMineTest {
         assertFalse(module.errandRunning());
         assertTrue(followingAPath());
         assertTrue(module.status().startsWith("Walking away"), "status: " + module.status());
+    }
+
+    private static void toolInHand(ItemData item, int durabilityLeft) {
+        DataComponents components = new DataComponents(new HashMap<>());
+        components.put(DataComponentTypes.DAMAGE, ItemUtil.getMaxDamage(new ItemStack(item.id(), 1)) - durabilityLeft);
+        CACHE.getPlayerCache().getInventoryCache().getPlayerInventory().setItemStack(36, new ItemStack(item.id(), 1, components));
+    }
+
+    /** Walking away can be 100 blocks of digging, and that would finish off the pickaxe with a long way still to go. */
+    @Test
+    void walkingAwayWaitsForAToolThatsAboutToBreakAndThenCarriesOn() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        failPathsUntilWalkingAway();
+        Goal walkingAway = currentGoal();
+
+        toolInHand(ItemRegistry.NETHERITE_PICKAXE, 5);
+        tick();
+
+        assertFalse(followingAPath(), "it should have stopped digging");
+
+        toolInHand(ItemRegistry.NETHERITE_PICKAXE, 1500);
+        tickUntil(() -> !module.errandRunning(), "finishing the errand");
+        waitForPath();
+
+        assertEquals(walkingAway, currentGoal(), "it should carry on the way it was going");
+    }
+
+    /** It can be climbing because an errand had nowhere to put a shulker box down, so that has to come first. */
+    @Test
+    void climbingOutDoesntStopForAToolThatsAboutToBreak() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        failPathsUntilClimbing();
+
+        toolInHand(ItemRegistry.NETHERITE_PICKAXE, 5);
+        tick(5);
+
+        assertFalse(module.errandRunning());
+        assertTrue(followingAPath());
+        assertEquals("Climbing out from [8, -30, 8]", module.status());
+    }
+
+    private final KillAura killAura = new KillAura();
+    private final EntityStandard piglin = new EntityStandard();
+
+    /** Zenith's real kill aura, as it is when it has something in reach. */
+    private void killAuraHasATarget(boolean hasATarget) throws ReflectiveOperationException {
+        CONFIG.client.extra.killAura.enabled = hasATarget;
+        MODULE.registerModule(killAura);
+        Field target = KillAura.class.getDeclaredField("attackTarget");
+        target.setAccessible(true);
+        target.set(killAura, new WeakReference<EntityLiving>(hasATarget ? piglin : null));
+    }
+
+    @Test
+    void stopsMiningForAFightAndGoesBackToItAfterwards() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+
+        killAuraHasATarget(true);
+        tick();
+
+        assertFalse(followingAPath(), "it should stand there and let the kill aura get on with it");
+        assertTrue(module.status().startsWith("Leaving it to the kill aura"), "status: " + module.status());
+        tick(20);
+        assertFalse(followingAPath(), "it shouldn't start anything else either");
+
+        killAuraHasATarget(false);
+        waitForPath();
+        assertFalse(module.status().startsWith("Leaving it to the kill aura"), "status: " + module.status());
+    }
+
+    @Test
+    void aFightWaitsForNoErrand() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        killAuraHasATarget(true);
+
+        // Now it's full, which would normally send it off to store things.
+        for (int slot = INVENTORY_SLOT; slot < 36; slot++) setSlot(slot, ItemRegistry.COBBLED_DEEPSLATE);
+        for (int slot = 37; slot <= LAST_SLOT; slot++) setSlot(slot, ItemRegistry.COBBLED_DEEPSLATE);
+        tick(5);
+
+        assertFalse(module.errandRunning(), "storing things can wait until the fight's over");
+        assertFalse(followingAPath());
+        killAuraHasATarget(false);
+    }
+
+    @Test
+    void aFightDoesntCountAsAPathThatFailed() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+        List<BlockPos> goingFor = blocksItsGoingFor();
+
+        killAuraHasATarget(true);
+        tick(3);
+        assertEquals(Set.of(), outOfReach(), "it could have got there, if it hadn't stopped to fight");
+        killAuraHasATarget(false);
+        waitForPath();
+
+        assertEquals(goingFor, blocksItsGoingFor());
+    }
+
+    @Test
+    void walkingAwayPicksUpAfterAFight() throws Exception {
+        want("cobbled_deepslate");
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        failPathsUntilWalkingAway();
+        Goal walkingAway = currentGoal();
+
+        killAuraHasATarget(true);
+        tick();
+        assertFalse(followingAPath());
+
+        killAuraHasATarget(false);
+        waitForPath();
+        assertEquals(walkingAway, currentGoal(), "it should carry on the way it was going");
     }
 
     @Test

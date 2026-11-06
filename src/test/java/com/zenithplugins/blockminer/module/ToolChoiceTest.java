@@ -121,11 +121,19 @@ class ToolChoiceTest {
     }
 
     @Test
-    void nothingIsWrongWhenItDoesntMatter() {
+    void anyToolThatWorksWillDoWhenItsAllTheSame() {
         hotbar(silkPick());
         assertNull(ToolChoice.firstWithWrongTool(DIAMOND_ORE, ToolNeed.ANY));
-        hotbar();
+        hotbar(fortunePick());
         assertNull(ToolChoice.firstWithWrongTool(DIAMOND_ORE, ToolNeed.ANY));
+    }
+
+    @Test
+    void noToolAtAllIsWrongForABlockThatGivesNothingToABareHand() {
+        hotbar();
+        assertEquals(BlockRegistry.OBSIDIAN, ToolChoice.firstWithWrongTool(List.of(BlockRegistry.OBSIDIAN), ToolNeed.ANY));
+        hotbar(new ItemStack(ItemRegistry.COAL.id(), 1));
+        assertEquals(BlockRegistry.OBSIDIAN, ToolChoice.firstWithWrongTool(List.of(BlockRegistry.OBSIDIAN), ToolNeed.ANY));
     }
 
     @Test
@@ -142,8 +150,21 @@ class ToolChoiceTest {
     void itLooksUpTheBlocksWhereTheToolMatters() {
         assertEquals(
             List.of(BlockRegistry.DIAMOND_ORE, BlockRegistry.DEEPSLATE_DIAMOND_ORE),
-            ToolChoice.blocksNeedingARightTool(List.of("diamond", "ancient_debris"))
+            ToolChoice.blocksNeedingARightTool(List.of("diamond", "oak_log"))
         );
-        assertEquals(List.of(), ToolChoice.blocksNeedingARightTool(List.of("ancient_debris")));
+        assertEquals(List.of(), ToolChoice.blocksNeedingARightTool(List.of("oak_log")));
+    }
+
+    /** A bare hand gets something from these, just not what was asked for. */
+    @Test
+    void theToolStillMattersForABlockThatGivesSomethingToABareHand() {
+        assertEquals(List.of(BlockRegistry.GLOWSTONE), ToolChoice.blocksNeedingARightTool(List.of("glowstone_dust")));
+        assertEquals(List.of(BlockRegistry.ICE), ToolChoice.blocksNeedingARightTool(List.of("ice")));
+    }
+
+    @Test
+    void aBlockThatGivesNothingToABareHandNeedsATool() {
+        assertEquals(List.of(BlockRegistry.ANCIENT_DEBRIS), ToolChoice.blocksNeedingARightTool(List.of("ancient_debris")));
+        assertEquals(List.of(BlockRegistry.OBSIDIAN), ToolChoice.blocksNeedingARightTool(List.of("obsidian")));
     }
 }

@@ -37,6 +37,8 @@ Before turning it on:
   **crafting table** if it should craft items into blocks and there isn't one nearby.
 - Give the bot **a stack of what it's mining**, such as diamonds for diamond ore. It's optional, but
   it means junk is kept out from the very start.
+- Give the bot **a sword**, and turn on ZenithProxy's kill aura if anything's likely to attack it. See
+  [When something attacks it](#when-something-attacks-it).
 - Don't leave other shulker boxes in the bot's inventory. Any it's carrying when it starts an errand go
   in the ender chest.
 - Run it well away from wardens, with nothing valuable on the bot for now. See
@@ -82,7 +84,9 @@ nothing chosen, it leaves the inventory alone, sends you a notification and wait
 it only looks at the hotbar. So before mining, the bot moves any wrong tool off the hotbar and the right
 one onto it. If it isn't carrying the right one, it fetches it from a tool shulker box in the ender chest,
 leaving the wrong one there. If there isn't one there either, it stops and tells you. The pathfinder's
-`autoTool` setting has to be on for this, which is the default.
+`autoTool` setting has to be on for this, which is the default. It does this for a block that gives nothing
+to a bare hand as well, even if any tool will do: if it's after `obsidian` with no pickaxe on the hotbar, it
+goes and gets one.
 
 **Only one kind of tool at a time:** the pathfinder uses one tool for everything it's mining, so you can't
 ask for `diamond` and `diamond_ore` together, as one needs Fortune and the other Silk Touch. `blockminer add`
@@ -268,12 +272,17 @@ When the tool in hand has `toolDurability` or less left (5 by default), the bot:
 
 1. Takes the shulker box with the best replacement from the ender chest.
 2. Places it and swaps the worn tool for the fresh one, leaving the worn tool in the shulker box.
-3. Breaks it, picks it back up, and puts it back in the ender chest.
+3. Moves the fresh one onto the hotbar if it isn't there already, as that's the only place the pathfinder
+   looks. Putting the shulker box down can take up the slot the worn tool was in.
+4. Breaks the shulker box, picks it back up, and puts it back in the ender chest.
 
 It looks for the same tool with the same enchantments first, then the same tool, then the same kind
 of tool (a diamond pickaxe for a netherite one, say), and takes whichever has the most durability. It
 only takes one that's right for what you asked for, so a worn Fortune pickaxe won't be replaced with a
 Silk Touch one when you're after diamonds. This covers pickaxes, axes, shovels and hoes.
+
+A worn tool can't wait for anything else, so this also interrupts walking away, which can be 100 blocks of
+digging. If the tool breaks on the way to the ender chest anyway, it still comes back with a fresh one.
 
 ### Collecting the shulker box
 
@@ -292,6 +301,31 @@ The inventory is meant to be full, but a shulker box needs a slot to come out in
 up. The bot merges two partly full stacks to free one, and stores before its stacks get too full to do
 that. If it ever can't, it drops the smallest stack on the ground, junk before target items, because
 that's better than leaving a full shulker box on the ground with nowhere to go.
+
+### When something attacks it
+
+Block Miner doesn't fight anything itself. That's up to ZenithProxy's kill aura, and the bot makes way for it:
+while the kill aura has something in reach, the bot stops whatever it's doing and stands there, whether it's
+mining, walking away or on an errand. It starts again 2 seconds after the last target, which gives anything
+that got knocked back time to come back. Without this, the pathfinder gets a turn between the kill aura's hits,
+and walks off, turns away, or swaps back to its pickaxe.
+
+If a fight is still going after a minute, the bot goes back to work alongside it and logs a warning, in case
+it's something the kill aura can never finish off, like a mob it can reach but not hurt.
+
+Mining `nether_gold_ore` or `gilded_blackstone` makes piglins angry, and so does opening an ender chest or a
+shulker box near them. The kill aura doesn't go after plain piglins unless you tell it to, as they count as
+neutral, unlike piglin brutes and hoglins:
+
+```
+killAura on
+killAura targetNeutralMobs on
+killAura targetNeutralMobs onlyAggressive on
+```
+
+`onlyAggressive` leaves alone any that aren't after the bot, as hitting one angers the rest. Keep a sword on the
+bot, because the kill aura otherwise hits with whatever's in hand. It reaches about 3 blocks and doesn't chase
+anything, so it can't stop a piglin shooting a crossbow from further away.
 
 ### When something goes wrong
 
@@ -355,7 +389,7 @@ the ground.
 - A drop that flies off somewhere can get left behind, as the bot doesn't go back for drops. Normally
   that's not an issue, because it walks into the blocks it mines, and the rest fall on it.
 - **A section turns into a big open pit**, up to around 60 blocks deep in deepslate. It's dark, so mobs can
-  spawn in it, and the bot doesn't fight them. Use ZenithProxy's own modules for that.
+  spawn in it, and the bot doesn't fight them. See [When something attacks it](#when-something-attacks-it).
 - Junk it leaves on the ground can land in a slot the moment one frees up, such as while it's storing
   things. That's harmless: it just gets thrown away again later.
 - A placed ender chest stays where the bot put it, so it's left hanging once the level under it gets

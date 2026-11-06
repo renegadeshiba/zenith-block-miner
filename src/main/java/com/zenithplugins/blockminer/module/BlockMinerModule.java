@@ -72,7 +72,8 @@ public class BlockMinerModule extends Module {
     private static final int TOOL_CHECK_INTERVAL_TICKS = 20;
     private static final int STARTUP_WAIT_TICKS = 20 * 5;
 
-    private final Bot bot = new Bot(this);
+    private final Fights fights = new Fights(() -> warn("The kill aura has been fighting for a minute, so carrying on alongside it"));
+    private final Bot bot = new Bot(this, fights);
     private final InventorySpace space = new InventorySpace(this, bot);
     private final CraftingErrand crafting = new CraftingErrand(this, bot, space);
     private final StorageErrand storage = new StorageErrand(this, bot, space, crafting);
@@ -165,7 +166,7 @@ public class BlockMinerModule extends Module {
     }
 
     public String status() {
-        return status;
+        return fights.underWay() ? "Leaving it to the kill aura, which has something to fight. Before that: " + status : status;
     }
 
     public boolean errandRunning() {
@@ -190,6 +191,11 @@ public class BlockMinerModule extends Module {
     void handleTick(ClientBotTick event) {
         tick++;
         if (errand != null) return;
+        if (fights.underWay()) {
+            // It goes back to whatever it was doing afterwards, including walking away or climbing out.
+            pauseMining();
+            return;
+        }
         if (storage.isStuck()) {
             stopAndNotify("The inventory is full of things it isn't allowed to store, so it can't pick up"
                 + " what it's mining. Make room, or check the keep list with `blockminer`");
@@ -203,13 +209,18 @@ public class BlockMinerModule extends Module {
             climbingBlocks.allow();
             startClimbingOut("Climbing to find room for its errand");
         }
-        // Getting out comes first, as nothing else can get done from where it's stuck.
-        if (climbingOut || walkingAway) {
+        // Getting out comes first, as nothing else can get done from where it's stuck. Except for a tool
+        // about to break, since walking away can be 100 blocks of digging. It picks up where it left off.
+        if (climbingOut || (walkingAway && !toolInHandIsWorn())) {
             keepMining();
         } else if (needsErrand()) {
             // Waiting out a failed errand still means not mining: the next few blocks could be the
             // ones that break the tool.
-            stopMining();
+            if (walkingAway) {
+                pauseMining();
+            } else {
+                stopMining();
+            }
             if (tick >= nextErrandTick) startErrand();
         } else {
             keepMining();
@@ -500,9 +511,13 @@ public class BlockMinerModule extends Module {
     }
 
     private void stopMining() {
+        pauseMining();
+        stopGettingOut();
+    }
+
+    private void pauseMining() {
         if (mining != null) BARITONE.stop();
         mining = null;
-        stopGettingOut();
     }
 
     // ----------------------------------------------------------------------------------------
@@ -513,11 +528,15 @@ public class BlockMinerModule extends Module {
         // With nothing chosen, the only thing to do is not leave a shulker box lying around.
         if (PLUGIN_CONFIG.wantedItems.isEmpty()) return bot.placedShulkerIsInThisWorld();
 
-        return ToolRules.isWorn(bot.heldStack(), PLUGIN_CONFIG.toolDurabilityThreshold)
+        return toolInHandIsWorn()
             || storage.isNeeded()
             || bot.placedShulkerIsInThisWorld()
             || wrongToolOnHotbar()
             || (tick >= nextFillTick && (space.isWorthFilling() || space.isWorthThrowingJunk()));
+    }
+
+    private boolean toolInHandIsWorn() {
+        return ToolRules.isWorn(bot.heldStack(), PLUGIN_CONFIG.toolDurabilityThreshold);
     }
 
     /** What the tool has to be like for the chosen items. Conflicting items don't get mined at all. */
@@ -533,10 +552,15 @@ public class BlockMinerModule extends Module {
     private boolean wrongToolOnHotbar() {
         if (tick >= nextToolCheckTick) {
             nextToolCheckTick = tick + TOOL_CHECK_INTERVAL_TICKS;
-            wrongTool = CONFIG.client.extra.pathfinder.autoTool && ToolChoice.firstWithWrongTool(
-                ToolChoice.blocksNeedingARightTool(PLUGIN_CONFIG.wantedItems), toolNeed()) != null;
+            wrongTool = CONFIG.client.extra.pathfinder.autoTool
+                && ToolChoice.firstWithWrongTool(blocksNeedingARightTool(), toolNeed()) != null;
         }
         return wrongTool;
+    }
+
+    private static List<Block> blocksNeedingARightTool() {
+        if (TargetItems.combinedToolNeed(PLUGIN_CONFIG.wantedItems) == null) return List.of();
+        return ToolChoice.blocksNeedingARightTool(PLUGIN_CONFIG.wantedItems);
     }
 
     private void startErrand() {
@@ -554,13 +578,13 @@ public class BlockMinerModule extends Module {
             storage.returnCarriedShulkers();
 
             if (!PLUGIN_CONFIG.wantedItems.isEmpty()) {
-                if (ToolRules.isWorn(bot.heldStack(), PLUGIN_CONFIG.toolDurabilityThreshold)) {
+                if (toolInHandIsWorn()) {
                     status = "Swapping a worn tool";
                     toolSwap.run(bot.heldStack(), toolNeed());
                 }
                 if (CONFIG.client.extra.pathfinder.autoTool) {
                     status = "Getting the right tool";
-                    toolSwap.ensureRightTool(ToolChoice.blocksNeedingARightTool(PLUGIN_CONFIG.wantedItems), toolNeed());
+                    toolSwap.ensureRightTool(blocksNeedingARightTool(), toolNeed());
                     wrongTool = false;
                 }
                 if (storage.isNeeded()) {

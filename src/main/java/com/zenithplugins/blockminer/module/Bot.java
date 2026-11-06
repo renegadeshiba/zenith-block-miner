@@ -6,6 +6,7 @@ import com.zenith.cache.data.entity.EntityLiving;
 import com.zenith.cache.data.inventory.Container;
 import com.zenith.cache.data.inventory.InventoryCache;
 import com.zenith.feature.inventory.InventoryActionRequest;
+import com.zenith.feature.inventory.InventoryManager;
 import com.zenith.feature.inventory.actions.ClickItem;
 import com.zenith.feature.inventory.actions.CloseContainer;
 import com.zenith.feature.inventory.actions.DropItem;
@@ -75,7 +76,7 @@ final class Bot {
     private static final int ITEM_ENTITY_STACK_METADATA = 8;
     private static final int POLL_MS = 50;
     private static final int MAX_OPEN_ATTEMPTS = 5;
-    private static final int CONTENTS_WAIT_MS = 2_000;
+    private static final int CONTENTS_WAIT_MS = 5_000;
 
     private static final int PLAYER_SLOTS = 36;
     private static final int HOTBAR_SLOTS = 9;
@@ -100,16 +101,26 @@ final class Bot {
     private final BlockMinerModule module;
     /** False once the bot goes offline or a player takes over, which ends any errand under way. */
     private final BooleanSupplier inControl;
+    private final Baritone pathfinder;
+    private final InventoryManager inventoryManager;
+    private final Fights fights;
     /** Chest position -> time it may be tried again. Only touched from the errand thread. */
     private final Map<String, Long> failedChests = new HashMap<>();
 
-    Bot(BlockMinerModule module) {
-        this(module, () -> Proxy.getInstance().isConnected() && !Proxy.getInstance().hasActivePlayer());
+    Bot(BlockMinerModule module, Fights fights) {
+        this(module, () -> Proxy.getInstance().isConnected() && !Proxy.getInstance().hasActivePlayer(), BARITONE, INVENTORY, fights);
     }
 
     Bot(BlockMinerModule module, BooleanSupplier inControl) {
+        this(module, inControl, BARITONE, INVENTORY, Fights.none());
+    }
+
+    Bot(BlockMinerModule module, BooleanSupplier inControl, Baritone pathfinder, InventoryManager inventoryManager, Fights fights) {
         this.module = module;
         this.inControl = inControl;
+        this.pathfinder = pathfinder;
+        this.inventoryManager = inventoryManager;
+        this.fights = fights;
     }
 
     // ----------------------------------------------------------------------------------------
@@ -139,14 +150,32 @@ final class Bot {
         }
     }
 
-    /** Starts a pathfinder request and waits for it to finish, failing if it's rejected or too slow. */
-    private void run(Supplier<PathingRequestFuture> request, int timeoutMs, String what) {
-        PathingRequestFuture future = request.get();
-        if (!waitFor(future::isCompleted, timeoutMs)) {
-            BARITONE.stop();
-            throw ErrandFailed.retry(what + " took too long");
+    /** A step of an errand that needs the bot's hands or feet would only get in the kill aura's way. */
+    private void waitOutAFight() {
+        while (fights.underWay()) {
+            checkAlive();
+            sleep(POLL_MS);
         }
-        if (!future.getNow()) throw ErrandFailed.retry(what + " didn't work");
+    }
+
+    /**
+     * Starts a pathfinder request and waits for it to finish, failing if it's rejected or too slow. A fight stops
+     * it, and it starts again from the beginning afterwards.
+     */
+    private void run(Supplier<PathingRequestFuture> request, int timeoutMs, String what) {
+        while (true) {
+            waitOutAFight();
+            PathingRequestFuture future = request.get();
+            if (!waitFor(() -> future.isCompleted() || fights.underWay(), timeoutMs)) {
+                pathfinder.stop();
+                throw ErrandFailed.retry(what + " took too long");
+            }
+            if (future.isCompleted()) {
+                if (!future.getNow()) throw ErrandFailed.retry(what + " didn't work");
+                return;
+            }
+            pathfinder.stop();
+        }
     }
 
     // ----------------------------------------------------------------------------------------
@@ -329,6 +358,7 @@ final class Bot {
         int sinceSubmit = 0;
         for (int check = 0; check < HOLD_TIMEOUT_CHECKS; check++) {
             checkAlive();
+            waitOutAFight();
             int target = hotbarSlotFor(itemId);
             boolean inHand = CACHE.getPlayerCache().getHeldItemSlot() == target
                 && isItem(CACHE.getPlayerCache().getPlayerInventory().get(OWN_HOTBAR_START + target), itemId);
@@ -369,7 +399,8 @@ final class Bot {
                 && Objects.equals(now.getDataComponents(), moving.getDataComponents());
         };
         for (int attempt = 0; attempt < MAX_OPEN_ATTEMPTS; attempt++) {
-            INVENTORY.submit(InventoryActionRequest.builder()
+            waitOutAFight();
+            inventoryManager.submit(InventoryActionRequest.builder()
                 .owner(module)
                 .priority(Baritone.getPriority() + 1)
                 .actions(new MoveToHotbarSlot(mainSlot, MoveToHotbarAction.from(hotbarSlot)))
@@ -380,7 +411,7 @@ final class Bot {
     }
 
     /** The hotbar slot already holding the item, otherwise an empty one, otherwise the held one. */
-    private int hotbarSlotFor(int itemId) {
+    int hotbarSlotFor(int itemId) {
         List<ItemStack> own = CACHE.getPlayerCache().getPlayerInventory();
         int empty = -1;
         for (int slot = OWN_HOTBAR_START; slot < OWN_HOTBAR_END; slot++) {
@@ -403,7 +434,7 @@ final class Bot {
         }
         if (CACHE.getPlayerCache().getHeldItemSlot() != target) actions.add(new SetHeldItem(target));
         if (actions.isEmpty()) return RequestFuture.immediateFuture(true);
-        return INVENTORY.submit(InventoryActionRequest.builder()
+        return inventoryManager.submit(InventoryActionRequest.builder()
             .owner(module)
             .priority(Baritone.getPriority() + 1)
             .actions(actions.toArray(new InventoryAction[0]))
@@ -424,7 +455,7 @@ final class Bot {
         closeContainer();
         for (int attempt = 0; attempt < MAX_OPEN_ATTEMPTS; attempt++) {
             try {
-                run(() -> BARITONE.rightClickBlock(pos[0], pos[1], pos[2]), ACTION_TIMEOUT_MS, "Opening " + name);
+                run(() -> pathfinder.rightClickBlock(pos[0], pos[1], pos[2]), ACTION_TIMEOUT_MS, "Opening " + name);
                 if (waitFor(Bot::containerIsReady, ACTION_TIMEOUT_MS)) {
                     waitFor(Bot::contentsHaveArrived, CONTENTS_WAIT_MS);
                     return;
@@ -432,7 +463,7 @@ final class Bot {
             } catch (ErrandFailed e) {
                 module.debug("{} (attempt {}/{})", e.getMessage(), attempt + 1, MAX_OPEN_ATTEMPTS);
             }
-            BARITONE.stop();
+            pathfinder.stop();
             sleep(200);
         }
         throw ErrandFailed.retry(name + " wouldn't open at " + Arrays.toString(pos));
@@ -524,7 +555,7 @@ final class Bot {
     }
 
     void walkNear(int[] pos, int range, String what) {
-        run(() -> BARITONE.pathTo(BlockScan.avoidingVines(new GoalNear(pos[0], pos[1], pos[2], range))), PATH_TIMEOUT_MS, what);
+        run(() -> pathfinder.pathTo(BlockScan.avoidingVines(new GoalNear(pos[0], pos[1], pos[2], range))), PATH_TIMEOUT_MS, what);
     }
 
     /** Walks back to where the errand started. Not reaching it doesn't matter: mining resumes from here. */
@@ -550,10 +581,10 @@ final class Bot {
 
     private boolean mineOutOfTheWay(int[] block) {
         try {
-            run(() -> BARITONE.breakBlock(block[0], block[1], block[2], true), BREAK_TIMEOUT_MS, "Mining to make room");
+            run(() -> pathfinder.breakBlock(block[0], block[1], block[2], true), BREAK_TIMEOUT_MS, "Mining to make room");
         } catch (ErrandFailed e) {
             module.warn("{} at {}", e.getMessage(), Arrays.toString(block));
-            BARITONE.stop();
+            pathfinder.stop();
             return false;
         }
         if (waitFor(() -> RoomBeside.isClear(block), ACTION_TIMEOUT_MS)) return true;
@@ -564,13 +595,15 @@ final class Bot {
     private boolean tryToPlace(int[] pos, ItemData item) {
         hold(item.id());
         try {
-            run(() -> BARITONE.placeBlock(pos[0], pos[1], pos[2], item), ACTION_TIMEOUT_MS, "Placing " + item.name());
+            run(() -> pathfinder.placeBlock(pos[0], pos[1], pos[2], item), ACTION_TIMEOUT_MS, "Placing " + item.name());
             if (waitFor(() -> isBlock(pos, item.name()), ACTION_TIMEOUT_MS)) return true;
             module.warn("Placed {} at {}, but it never appeared", item.name(), Arrays.toString(pos));
         } catch (ErrandFailed e) {
+            // It could have gone down just as a fight started, and starting again found the spot taken.
+            if (isBlock(pos, item.name())) return true;
             module.warn("{} at {}", e.getMessage(), Arrays.toString(pos));
         }
-        BARITONE.stop();
+        pathfinder.stop();
         return false;
     }
 
@@ -579,7 +612,7 @@ final class Bot {
         closeContainer();
         makeRoom.run();
         int before = countItem(item.id());
-        run(() -> BARITONE.breakBlock(pos[0], pos[1], pos[2], true), BREAK_TIMEOUT_MS, "Breaking " + item.name());
+        run(() -> pathfinder.breakBlock(pos[0], pos[1], pos[2], true), BREAK_TIMEOUT_MS, "Breaking " + item.name());
         if (!waitFor(() -> !isBlock(pos, item.name()), BREAK_TIMEOUT_MS)) {
             throw ErrandFailed.retry(item.name() + " wasn't broken at " + Arrays.toString(pos));
         }
@@ -603,6 +636,7 @@ final class Bot {
         if (waitFor(collected, PICKUP_WITHOUT_WALKING_MS)) return true;
 
         for (int attempt = 0; attempt < PICKUP_ATTEMPTS; attempt++) {
+            waitOutAFight();
             makeRoom.run();
             Drop drop = findDrop(near, stack -> stack.getId() == itemId);
             int[] spot = drop != null ? drop.spot() : near;
@@ -612,10 +646,16 @@ final class Bot {
             Goal goal = attempt % 2 == 0
                 ? new GoalBlock(spot[0], spot[1], spot[2])
                 : new GoalNear(spot[0], spot[1], spot[2], 1);
-            PathingRequestFuture walk = BARITONE.pathTo(BlockScan.avoidingVines(goal));
-            waitFor(() -> collected.getAsBoolean() || walk.isCompleted(), PICKUP_WALK_TIMEOUT_MS);
+            PathingRequestFuture walk = pathfinder.pathTo(BlockScan.avoidingVines(goal));
+            waitFor(() -> collected.getAsBoolean() || walk.isCompleted() || fights.underWay(), PICKUP_WALK_TIMEOUT_MS);
+            if (fights.underWay() && !collected.getAsBoolean()) {
+                // That wasn't a fair try, and running out of them turns the bot off.
+                pathfinder.stop();
+                attempt--;
+                continue;
+            }
             boolean gotIt = waitFor(collected, PICKUP_AFTER_WALK_MS);
-            BARITONE.stop();
+            pathfinder.stop();
             if (gotIt) return true;
         }
         return false;
