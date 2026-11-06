@@ -512,7 +512,7 @@ class ChoosingHowToMineTest {
         failPathsUntilClimbing();
 
         assertEquals("Climbing out from [8, -30, 8]", module.status());
-        assertEquals(new GoalY(-24), currentGoal());
+        assertEquals(BlockScan.avoidingVines(new GoalY(-24)), currentGoal());
         assertTrue(allowedToBuildWith("cobbled_deepslate"), "so that the pathfinder can use what the bot has");
     }
 
@@ -907,6 +907,106 @@ class ChoosingHowToMineTest {
         assertEquals("Mining", module.status());
     }
 
+    // ----------------------------------------------------------------------------------------
+    // not getting anywhere
+    // ----------------------------------------------------------------------------------------
+
+    private static final int A_MINUTE = 20 * 60;
+
+    @Test
+    void givesUpOnAWalkThatsGettingNowhere() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+
+        tick(A_MINUTE - 5);
+        assertTrue(followingAPath(), "that's not long enough to give up");
+        tick(10);
+
+        assertFalse(followingAPath());
+        assertFalse(outOfReach().isEmpty(), "it can't get there, as far as it's concerned");
+        assertEquals("Waiting: can't find a way to anything it can mine from here", module.status());
+    }
+
+    @Test
+    void anythingLikeClimbingAVineGetsItOutInTheEnd() throws Exception {
+        // The pathfinder never says that it's failed, so each of these has to find out for itself.
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        for (int walk = 0; walk < 3; walk++) {
+            waitForPath();
+            tick(A_MINUTE + 5);
+        }
+
+        assertTrue(module.status().startsWith("Walking away"), "status: " + module.status());
+    }
+
+    @Test
+    void aLongWalkIsFineAsLongAsItsGettingSomewhere() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+
+        for (int block = 1; block <= 5; block++) {
+            tick(A_MINUTE - 100);
+            TestWorld.putBotAt(8.5 + block, -30, 8.5);
+        }
+        tick(5);
+
+        assertTrue(followingAPath());
+        assertTrue(outOfReach().isEmpty());
+    }
+
+    @Test
+    void goingBackAndForthIsntGettingAnywhere() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+
+        for (int time = 0; time < 2 * A_MINUTE; time += 100) {
+            TestWorld.putBotAt(time % 200 == 0 ? 8.5 : 9.5, -30, 8.5);
+            tick(100);
+        }
+
+        assertFalse(outOfReach().isEmpty(), "it should have given up by now");
+    }
+
+    @Test
+    void everyWalkGetsAFreshStart() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+        TestWorld.putBotAt(9.5, -30, 8.5);
+        tick(5);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        tick(A_MINUTE - 50);
+        pathEnds(true);
+        waitForPath();
+
+        // Back over the same ground, which is all new to this walk.
+        tick(A_MINUTE - 100);
+        TestWorld.putBotAt(9.5, -30, 8.5);
+        tick(A_MINUTE - 100);
+
+        assertTrue(followingAPath());
+        assertTrue(outOfReach().isEmpty());
+    }
+
+    @Test
+    void walkingAwayGivesUpTooAndTriesAnotherWay() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        failPathsUntilWalkingAway();
+        waitForPath();
+        assertTrue(currentGoal().isInGoal(108, -30, 8));
+
+        tick(A_MINUTE + 5);
+        waitForPath();
+
+        assertTrue(currentGoal().isInGoal(8, -30, 108), "the next way");
+    }
+
     @Test
     void walksAwayWhenItCantGetToAnything() throws Exception {
         want("cobbled_deepslate");
@@ -984,7 +1084,7 @@ class ChoosingHowToMineTest {
 
         assertEquals("Climbing out from [8, -30, 8]", module.status());
         waitForPath();
-        assertEquals(new GoalY(-24), currentGoal());
+        assertEquals(BlockScan.avoidingVines(new GoalY(-24)), currentGoal());
         assertTrue(allowedToBuildWith("cobbled_deepslate"));
     }
 
@@ -1024,7 +1124,7 @@ class ChoosingHowToMineTest {
         tick(3);
 
         assertEquals("Climbing to find room for its errand", module.status());
-        assertEquals(new GoalY(-24), currentGoal());
+        assertEquals(BlockScan.avoidingVines(new GoalY(-24)), currentGoal());
         assertTrue(allowedToBuildWith("cobbled_deepslate"));
     }
 
@@ -1039,6 +1139,6 @@ class ChoosingHowToMineTest {
 
         assertTrue(BlockMinerPlugin.PLUGIN_CONFIG.enabled);
         assertEquals("Climbing to find room for its errand", module.status());
-        assertEquals(new GoalY(-24), currentGoal());
+        assertEquals(BlockScan.avoidingVines(new GoalY(-24)), currentGoal());
     }
 }

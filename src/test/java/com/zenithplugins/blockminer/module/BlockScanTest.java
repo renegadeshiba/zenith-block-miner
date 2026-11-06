@@ -1523,6 +1523,131 @@ class BlockScanTest {
     }
 
     // ----------------------------------------------------------------------------------------
+    // vines
+    // ----------------------------------------------------------------------------------------
+
+    private static final com.zenith.mc.block.Block[] EVERY_KIND_OF_VINE = {
+        BlockRegistry.VINE,
+        BlockRegistry.WEEPING_VINES,
+        BlockRegistry.WEEPING_VINES_PLANT,
+        BlockRegistry.TWISTING_VINES,
+        BlockRegistry.TWISTING_VINES_PLANT,
+        BlockRegistry.CAVE_VINES,
+        BlockRegistry.CAVE_VINES_PLANT,
+    };
+
+    /** A shaft with a vine all the way up one side, and ore above that, which it would rather climb to than dig. */
+    private PretendBot botBesideAVine(com.zenith.mc.block.Block vine, com.zenith.mc.block.Block rock) throws ReflectiveOperationException {
+        world.clear();
+        world = new TestWorld(3);
+        world.layer(0, 40, rock);
+        for (int y = 10; y <= 26; y++) {
+            world.set(8, y, 8, vine);
+            world.set(9, y, 8, BlockRegistry.AIR);
+        }
+        return new PretendBot(world, new BlockPos(9, 10, 8), COAL);
+    }
+
+    private PretendBot botBesideAVineUnderSomeRockWithOreOnTop(com.zenith.mc.block.Block vine) throws ReflectiveOperationException {
+        PretendBot bot = botBesideAVine(vine, BlockRegistry.STONE);
+        world.set(8, 28, 8, BlockRegistry.COAL_ORE);
+        return bot;
+    }
+
+    private boolean wentOnTheVine(PretendBot bot) {
+        return bot.walked.stream().anyMatch(pos -> pos.x() == 8 && pos.z() == 8 && pos.y() < 27);
+    }
+
+    @Test
+    void digsItsWayUpRatherThanClimbingAVineOfAnyKind() throws ReflectiveOperationException {
+        for (var vine : EVERY_KIND_OF_VINE) {
+            PretendBot bot = botBesideAVineUnderSomeRockWithOreOnTop(vine);
+
+            BlockScan.MiningGoal goal = goalAnywhere(COAL);
+
+            assertNotNull(goal);
+            assertTrue(bot.carryOut(goal), "stuck at " + bot.at + " beside " + vine.name());
+            assertFalse(wentOnTheVine(bot), "climbed the " + vine.name());
+            assertEquals(1, bot.wantedBroken, vine.name());
+        }
+    }
+
+    @Test
+    void wouldClimbAVineIfItWasntForAllThis() throws ReflectiveOperationException {
+        // What it's all here to avoid. If this stops being true, Zenith's pathfinder may have stopped going for them.
+        for (var vine : new com.zenith.mc.block.Block[] {BlockRegistry.VINE, BlockRegistry.TWISTING_VINES_PLANT, BlockRegistry.WEEPING_VINES_PLANT}) {
+            PretendBot bot = botBesideAVineUnderSomeRockWithOreOnTop(vine);
+
+            assertTrue(bot.followPathTo(new GoalTwoBlocks(8, 28, 8)), "stuck at " + bot.at);
+
+            assertTrue(wentOnTheVine(bot), "the test above doesn't test anything unless it's the cheaper way, for " + vine.name());
+        }
+    }
+
+    @Test
+    void stillClimbsAVineIfThatsTheOnlyWay() throws ReflectiveOperationException {
+        PretendBot bot = botBesideAVine(BlockRegistry.VINE, BlockRegistry.BEDROCK);
+        world.set(8, 27, 8, BlockRegistry.COAL_ORE);
+        world.set(8, 28, 8, BlockRegistry.AIR);
+        world.set(8, 29, 8, BlockRegistry.AIR);
+
+        BlockScan.MiningGoal goal = goalAnywhere(COAL);
+
+        assertNotNull(goal);
+        assertTrue(bot.carryOut(goal), "stuck at " + bot.at);
+        assertTrue(wentOnTheVine(bot));
+        assertEquals(0, bot.bedrockBroken);
+    }
+
+    @Test
+    void wontStopOnAVineOfAnyKind() {
+        TestWorld.putBotAt(8.5, 30, 8.5);
+        for (var vine : EVERY_KIND_OF_VINE) {
+            world.set(8, 20, 8, vine);
+
+            assertFalse(BlockScan.avoidingVines(new GoalY(20)).isInGoal(8, 20, 8), vine.name());
+        }
+        world.set(8, 20, 8, BlockRegistry.AIR);
+        assertTrue(BlockScan.avoidingVines(new GoalY(20)).isInGoal(8, 20, 8));
+    }
+
+    @Test
+    void aVineIsALastResortOfAnyKind() {
+        TestWorld.putBotAt(8.5, 30, 8.5);
+        double clear = BlockScan.avoidingVines(new GoalY(25)).heuristic(8, 20, 8);
+        for (var vine : EVERY_KIND_OF_VINE) {
+            world.set(8, 20, 8, vine);
+
+            double onAVine = BlockScan.avoidingVines(new GoalY(25)).heuristic(8, 20, 8);
+
+            assertTrue(onAVine >= clear + 10_000, vine.name() + " only costs " + (onAVine - clear));
+        }
+    }
+
+    @Test
+    void itsFineWithItsHeadInAVine() {
+        // It's what's at its feet that makes it climb.
+        TestWorld.putBotAt(8.5, 30, 8.5);
+        world.set(8, 21, 8, BlockRegistry.VINE);
+
+        Goal goal = BlockScan.avoidingVines(new GoalY(20));
+
+        assertTrue(goal.isInGoal(8, 20, 8));
+        assertEquals(new GoalY(20).heuristic(8, 20, 8), goal.heuristic(8, 20, 8));
+    }
+
+    @Test
+    void anErrandCanStillGoBelowTheLowestLevel() {
+        // To collect a dropped shulker box, say. It's only the mining that's kept above it.
+        TestWorld.putBotAt(8.5, 30, 8.5);
+
+        Goal goal = BlockScan.avoidingVines(new GoalY(LOWEST_LEVEL - 3));
+
+        assertTrue(goal.isInGoal(8, LOWEST_LEVEL - 3, 8));
+        assertEquals(new GoalY(LOWEST_LEVEL - 3).heuristic(8, 30, 8), goal.heuristic(8, 30, 8));
+    }
+
+    // ----------------------------------------------------------------------------------------
     // building, and walking away
     // ----------------------------------------------------------------------------------------
 

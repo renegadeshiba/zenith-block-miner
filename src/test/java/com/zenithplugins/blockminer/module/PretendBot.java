@@ -35,6 +35,7 @@ final class PretendBot {
     int searches;
     int blocksPlaced;
     final Set<BlockPos> placed = new HashSet<>();
+    final Set<BlockPos> walked = new HashSet<>();
 
     PretendBot(TestWorld world, BlockPos start, BlockOptionalMetaLookup wanted) {
         this.world = world;
@@ -73,6 +74,7 @@ final class PretendBot {
             List<BlockPos> positions = new ArrayList<>(path.positions());
             for (int i = 1; i < positions.size(); i++) {
                 step(positions.get(i - 1), positions.get(i));
+                walked.add(positions.get(i));
                 lowestY = Math.min(lowestY, positions.get(i).y());
             }
             BlockPos end = path.getDest();
@@ -86,9 +88,9 @@ final class PretendBot {
     private void step(BlockPos from, BlockPos to) {
         boolean sameColumn = from.x() == to.x() && from.z() == to.z();
         if (sameColumn && to.y() > from.y()) {
-            // Pillaring: it jumps, and puts a block where it was standing.
+            // Pillaring: it jumps, and puts a block where it was standing. Unless it's climbing up what's there.
             clear(to.x(), to.y() + 1, to.z());
-            place(from.x(), from.y(), from.z());
+            if (World.getBlock(from).isAir()) place(from.x(), from.y(), from.z());
         } else if (sameColumn) {
             clear(to.x(), to.y(), to.z());
         } else {

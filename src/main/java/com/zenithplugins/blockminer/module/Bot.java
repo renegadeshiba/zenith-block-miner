@@ -524,7 +524,7 @@ final class Bot {
     }
 
     void walkNear(int[] pos, int range, String what) {
-        run(() -> BARITONE.pathTo(new GoalNear(pos[0], pos[1], pos[2], range)), PATH_TIMEOUT_MS, what);
+        run(() -> BARITONE.pathTo(BlockScan.avoidingVines(new GoalNear(pos[0], pos[1], pos[2], range))), PATH_TIMEOUT_MS, what);
     }
 
     /** Walks back to where the errand started. Not reaching it doesn't matter: mining resumes from here. */
@@ -598,7 +598,7 @@ final class Bot {
      * moment the bot walks right onto the item, or as close as it can get if it can't stand there.
      * Junk on the ground can land in a free slot before the drop does, so it makes room before each try.
      */
-    private boolean collectDrop(int[] near, int itemId, int countBefore, Runnable makeRoom) {
+    boolean collectDrop(int[] near, int itemId, int countBefore, Runnable makeRoom) {
         BooleanSupplier collected = () -> countItem(itemId) > countBefore;
         if (waitFor(collected, PICKUP_WITHOUT_WALKING_MS)) return true;
 
@@ -612,7 +612,7 @@ final class Bot {
             Goal goal = attempt % 2 == 0
                 ? new GoalBlock(spot[0], spot[1], spot[2])
                 : new GoalNear(spot[0], spot[1], spot[2], 1);
-            PathingRequestFuture walk = BARITONE.pathTo(goal);
+            PathingRequestFuture walk = BARITONE.pathTo(BlockScan.avoidingVines(goal));
             waitFor(() -> collected.getAsBoolean() || walk.isCompleted(), PICKUP_WALK_TIMEOUT_MS);
             boolean gotIt = waitFor(collected, PICKUP_AFTER_WALK_MS);
             BARITONE.stop();

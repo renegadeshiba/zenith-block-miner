@@ -137,6 +137,10 @@ section at a time. A section is everything within 24 blocks of where it starts.
 4. Once the section is used up all the way down to Y -58, it digs back up to the top of the next section
    along, and starts again. It carries on in a straight line, turning if the next one is already mined out.
 
+**It keeps off vines of every kind.** Zenith's pathfinder treats them like ladders, which is much cheaper than
+digging, but if the bot can't really climb one, the pathfinder just plans the same way up again, forever. So it
+digs its way around them, and only goes on one if there's no other way at all.
+
 A few odd blocks don't count as the top, and neither does a layer that's mostly something else. So for
 deepslate it starts about where stone gives way to deepslate, not at a stray block higher up.
 
@@ -315,6 +319,9 @@ If the bot can't find a way to something, it tries these in order:
    direction in turn, and starts a new section from where it ends up.
 4. **Building up.** If it can't walk away in any direction, it builds its way 6 blocks up, which also gets it
    out of a pit in the bedrock.
+
+**A walk that isn't getting anywhere counts as a path it can't find.** If it hasn't been anywhere new for a minute,
+it gives up on it and carries on as above, so it can't spend hours on something like a vine it can't climb.
 
 You'll get a notification saying where it is if none of that works, or if it gets stuck 6 times in a row
 without getting any mining done in between. Each of these steps also goes in the log, so that's the place to

@@ -1,14 +1,18 @@
 package com.zenithplugins.blockminer.module;
 
 import com.zenith.cache.data.inventory.Container;
+import com.zenith.feature.pathfinder.goals.GoalBlock;
+import com.zenith.feature.pathfinder.goals.GoalNear;
 import com.zenith.mc.item.ItemRegistry;
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static com.zenith.Globals.BARITONE;
 import static com.zenith.Globals.CACHE;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /** The bot doesn't go below the lowest level for anything, and that includes an ender chest it left there. */
@@ -34,6 +38,43 @@ class FindingAnEnderChestTest {
     private static void carrying(boolean carrying) {
         CACHE.getPlayerCache().getInventoryCache().getPlayerInventory().setItemStack(9,
             carrying ? new ItemStack(ItemRegistry.ENDER_CHEST.id(), 1) : Container.EMPTY_STACK);
+    }
+
+    @Test
+    void keepsOffVinesWalkingAroundOnAnErrand() throws InterruptedException {
+        Thread errand = new Thread(() -> bot.walkBackTo(new int[]{30, -45, 3}));
+        errand.setDaemon(true);
+        errand.start();
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (!BARITONE.getCustomGoalProcess().isActive() && System.currentTimeMillis() < deadline) Thread.sleep(5);
+
+        var goal = BARITONE.getCustomGoalProcess().getGoal();
+        BARITONE.stop();
+        errand.join(5_000);
+
+        assertEquals(BlockScan.avoidingVines(new GoalNear(30, -45, 3, 2)), goal);
+    }
+
+    @Test
+    void keepsOffVinesCollectingADrop() throws InterruptedException {
+        Thread errand = new Thread(() -> {
+            try {
+                bot.collectDrop(new int[]{30, -45, 3}, ItemRegistry.SHULKER_BOX.id(), 0, () -> { });
+            } catch (ErrandAborted e) {
+                // That's what it's told to do once this has seen what it's after.
+            }
+        });
+        errand.setDaemon(true);
+        errand.start();
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (!BARITONE.getCustomGoalProcess().isActive() && System.currentTimeMillis() < deadline) Thread.sleep(5);
+
+        var goal = BARITONE.getCustomGoalProcess().getGoal();
+        errand.interrupt();
+        BARITONE.stop();
+        errand.join(5_000);
+
+        assertEquals(BlockScan.avoidingVines(new GoalBlock(30, -45, 3)), goal);
     }
 
     @Test

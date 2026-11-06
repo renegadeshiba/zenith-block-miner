@@ -63,8 +63,8 @@ final class BlockScan {
     // Y -58 in the overworld. Bedrock goes up to 4 above the bottom of the world, so that leaves a block
     // between it and the bot's floor, which keeps it out of the pits in the bedrock.
     private static final int LOWEST_LEVEL_ABOVE_WORLD_BOTTOM = 6;
-    // About 10,000 blocks of walking, so no real way around is ever rejected in favour of going lower.
-    private static final double BELOW_LOWEST_LEVEL_PENALTY = 50_000;
+    // About 10,000 blocks of walking, so no real way around is ever rejected in favour of going lower, or onto a vine.
+    private static final double LAST_RESORT_PENALTY = 50_000;
     // Per block further down, so a bot that's already down there heads up.
     private static final double DEEPER_PENALTY = 20;
     private static final double PRESSING_ON_WEIGHT = 6;
@@ -157,25 +157,30 @@ final class BlockScan {
     }
 
     /**
-     * {@code goal}, somewhere the bot can stand without being below the lowest level, on a way there that
-     * only goes below it as a last resort. A goal can't stop the pathfinder's search going anywhere, but
-     * the search always looks next at the place with the lowest "cost so far plus heuristic", so a huge
-     * heuristic means it tries everything else first.
+     * {@code goal}, somewhere the bot can stand without being below the lowest level or on a vine, on a way
+     * there that only goes to either of those as a last resort. A goal can't stop the pathfinder's search
+     * going anywhere, but the search always looks next at the place with the lowest "cost so far plus
+     * heuristic", so a huge heuristic means it tries everything else first.
+     *
+     * <p>Zenith's pathfinder treats a vine like a ladder, which is much cheaper than digging, so it goes for
+     * them. But there's nothing to say the bot can really climb one, and if it can't, the pathfinder just plans
+     * the same way up again, forever. It's what's at its feet that makes it climb, so its head can be in one.
      *
      * <p>{@code weight} makes the search press on towards the goal. Heuristics are measured in walking, and
      * digging costs several times that, so where the only way is through rock, it otherwise spends all its
      * time exploring and can give up having got nowhere. It might dig where going round would be cheaper,
      * but this is a miner.
      */
-    private record AboveLowestLevel(Goal goal, int lowestLevel, double weight) implements Goal {
+    private record KeepingClear(Goal goal, int lowestLevel, double weight) implements Goal {
         @Override
         public boolean isInGoal(int x, int y, int z) {
-            return y >= lowestLevel && goal.isInGoal(x, y, z);
+            return y >= lowestLevel && !isVine(World.getBlock(x, y, z)) && goal.isInGoal(x, y, z);
         }
 
         @Override
         public double heuristic(int x, int y, int z) {
-            double penalty = y < lowestLevel ? BELOW_LOWEST_LEVEL_PENALTY + (lowestLevel - y) * DEEPER_PENALTY : 0;
+            double penalty = y < lowestLevel ? LAST_RESORT_PENALTY + (lowestLevel - y) * DEEPER_PENALTY : 0;
+            if (isVine(World.getBlock(x, y, z))) penalty += LAST_RESORT_PENALTY;
             return goal.heuristic(x, y, z) * weight + penalty;
         }
 
@@ -191,6 +196,21 @@ final class BlockScan {
     }
 
     private BlockScan() {
+    }
+
+    private static boolean isVine(Block block) {
+        return block == BlockRegistry.VINE
+            || block == BlockRegistry.WEEPING_VINES
+            || block == BlockRegistry.WEEPING_VINES_PLANT
+            || block == BlockRegistry.TWISTING_VINES
+            || block == BlockRegistry.TWISTING_VINES_PLANT
+            || block == BlockRegistry.CAVE_VINES
+            || block == BlockRegistry.CAVE_VINES_PLANT;
+    }
+
+    /** This goal, on a way there that only goes onto a vine as a last resort, for wherever the bot goes on an errand. */
+    static Goal avoidingVines(Goal goal) {
+        return new KeepingClear(goal, Integer.MIN_VALUE, 1);
     }
 
     /** The lowest the bot goes in the current dimension, whatever it's after. */
@@ -408,7 +428,7 @@ final class BlockScan {
     private static Goal goalThisWay(int direction, int blocks) {
         PlayerCache player = CACHE.getPlayerCache();
         int[] heading = DIRECTIONS[Math.floorMod(direction, DIRECTIONS.length)];
-        return new AboveLowestLevel(
+        return new KeepingClear(
             new GoalXZ(
                 MathHelper.floorI(player.getX()) + heading[0] * blocks,
                 MathHelper.floorI(player.getZ()) + heading[1] * blocks),
@@ -440,7 +460,7 @@ final class BlockScan {
      * way up out of the level.
      */
     private static Goal goalOnLevel(List<BlockPos> blocks, int level, int lowestLevel, double weight) {
-        return new AboveLowestLevel(
+        return new KeepingClear(
             new GoalComposite(blocks.stream()
                 .map(pos -> new GoalBlock(pos.x(), level, pos.z()))
                 .distinct()
@@ -460,7 +480,7 @@ final class BlockScan {
                 goals.add(new GoalBlock(pos.x(), feet, pos.z()));
             }
         }
-        return new AboveLowestLevel(new GoalComposite(goals.toArray(Goal[]::new)), lowestLevel(), PRESSING_ON_WEIGHT);
+        return new KeepingClear(new GoalComposite(goals.toArray(Goal[]::new)), lowestLevel(), PRESSING_ON_WEIGHT);
     }
 
     /**

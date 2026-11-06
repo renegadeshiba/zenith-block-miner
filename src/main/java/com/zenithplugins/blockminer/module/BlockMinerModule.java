@@ -5,6 +5,7 @@ import com.google.common.collect.Sets;
 import com.zenith.discord.Embed;
 import com.zenith.event.client.ClientBotTick;
 import com.zenith.feature.pathfinder.PathingRequestFuture;
+import com.zenith.feature.pathfinder.goals.Goal;
 import com.zenith.feature.pathfinder.goals.GoalY;
 import com.zenith.feature.pathfinder.util.BlockOptionalMetaLookup;
 import com.zenith.mc.block.Block;
@@ -53,6 +54,8 @@ public class BlockMinerModule extends Module {
     private static final int NO_PATH_TRIES_FOR_NEAREST = 12;
     // A block overhead takes moments to mine, or a few seconds without the right tool.
     private static final int MINING_OVERHEAD_TIMEOUT_TICKS = 20 * 30;
+    // Long enough to mine anything it's likely to walk through, even with a server that's struggling.
+    private static final int GETTING_NOWHERE_TICKS = 20 * 60;
     // Blocks it couldn't get to might be fine from somewhere else, once it's moved on.
     private static final int OUT_OF_REACH_MEMORY_TICKS = 20 * 60 * 5;
     // Enough to be clear of what it was stuck in, and it mines on from there.
@@ -88,6 +91,8 @@ public class BlockMinerModule extends Module {
 
     private volatile @Nullable PathingRequestFuture mining;
     private long miningStartedTick;
+    private final Set<BlockPos> placesBeen = new HashSet<>();
+    private long lastNewPlaceTick;
     private volatile long nextMineTick;
     private boolean reportedBreakingOff;
     private boolean reportedNothingChosen;
@@ -234,8 +239,11 @@ public class BlockMinerModule extends Module {
         PathingRequestFuture current = mining;
         if (current != null) {
             if (!current.isCompleted()) {
-                // Reads as a block it couldn't get to, next time round. Nothing else would end it.
-                if (isMiningOverhead() && tick - miningStartedTick > MINING_OVERHEAD_TIMEOUT_TICKS) BARITONE.stop();
+                // Reads as somewhere it couldn't get to, next time round. Nothing else would end it.
+                if (isMiningOverhead() ? tick - miningStartedTick > MINING_OVERHEAD_TIMEOUT_TICKS : isGettingNowhere()) {
+                    warn("Hasn't got anywhere from {} in a while, so giving up on that", whereTheBotIs());
+                    BARITONE.stop();
+                }
                 return;
             }
             miningEnded(current.getNow());
@@ -244,11 +252,11 @@ public class BlockMinerModule extends Module {
         if (!PLUGIN_CONFIG.enabled || tick < nextMineTick || BARITONE.isActive()) return;
 
         if (climbingOut) {
-            mining = BARITONE.pathTo(new GoalY(bot.position()[1] + CLIMB_BLOCKS));
+            walkTo(BlockScan.avoidingVines(new GoalY(bot.position()[1] + CLIMB_BLOCKS)));
             return;
         }
         if (walkingAway) {
-            mining = BARITONE.pathTo(BlockScan.walkingAwayGoal(exploringDirection));
+            walkTo(BlockScan.walkingAwayGoal(exploringDirection));
             return;
         }
 
@@ -306,7 +314,7 @@ public class BlockMinerModule extends Module {
             if (!reportedExploring) info("None of {} in the loaded chunks, so going to look for some", names);
             reportedExploring = true;
             miningArea = null;
-            mining = BARITONE.pathTo(BlockScan.exploringGoal(exploringDirection));
+            walkTo(BlockScan.exploringGoal(exploringDirection));
             status = "Looking for " + names + ", as there's none in the loaded chunks";
             return;
         }
@@ -319,8 +327,24 @@ public class BlockMinerModule extends Module {
             status = "Mining";
             return;
         }
-        mining = BARITONE.pathTo(currentGoal.goal());
+        walkTo(currentGoal.goal());
         status = currentGoal.onBotsLevel() ? "Mining" : "Walking to the nearest " + names;
+    }
+
+    private void walkTo(Goal goal) {
+        placesBeen.clear();
+        mining = BARITONE.pathTo(goal);
+    }
+
+    /**
+     * The pathfinder can go on forever trying the same thing, like climbing a vine it can't really climb, and that
+     * never counts as failing. Going back and forth doesn't count as getting anywhere either, only being somewhere
+     * new. Walking a long way, or mining a slow block on the way, is fine.
+     */
+    private boolean isGettingNowhere() {
+        int[] position = bot.position();
+        if (placesBeen.add(new BlockPos(position[0], position[1], position[2]))) lastNewPlaceTick = tick;
+        return tick - lastNewPlaceTick > GETTING_NOWHERE_TICKS;
     }
 
     private boolean isMiningOverhead() {
