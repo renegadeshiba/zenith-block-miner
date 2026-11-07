@@ -1,38 +1,35 @@
 ## What's fixed
 
-**It stood on top of an ender chest all night, logging `Pathing complete` over and over.** An ender chest is a little under a block high. Standing on one, ZenithProxy's pathfinder counts the bot's feet as being in the block above it, but Block Miner went by the block below. So it kept sending the bot to the spot it was already standing on, each walk was over as soon as it started, and that counted as getting there. Soul sand, which is all over the Nether, mud and slabs could do the same.
+**The kill aura stopped working, and the bot just stood there getting hit.** Since 1.1.8, the bot stands still whenever the kill aura has something in reach, so that the pathfinder doesn't get in its way between hits. But a mob at the edge of the kill aura's reach, like a piglin with a crossbow keeping its distance, can give it a target for a moment over and over without it ever landing a hit. Each time, the bot stood still for another 2 seconds, so it stood there being shot.
 
-It now goes by where the pathfinder says its feet are. On top of that, there are two new backstops:
+Now it only stands still while the kill aura is actually getting hits in, which the bot can tell from the attacks it sends. It gives the kill aura 3 seconds to get a hit in, at the start of a fight and after each hit. If it hasn't, the bot carries on with what it was doing and logs this, at most once every 5 minutes:
 
-- **Arriving 3 times in a row without moving** counts as a path it can't find, so it moves on.
-- **3 minutes without going anywhere or picking anything up** makes it walk away, whatever the reason. That's going less than 8 blocks from where it was, while it's meant to be mining, so errands and fights don't count. It's logged if it happens.
+> The kill aura has something to fight but hasn't hit it in 3 seconds, so carrying on.
 
-**It mined tuff from the bottom up, then spent ages getting to what was left in the roof.** It started a section at the first layer that was mostly what you asked for, so anything above that was left until the end, by which time the floor under it was gone. A smaller pocket that wasn't enough of a section got mined from wherever the bot happened to be, which was often the bottom. Now:
+**The kill aura couldn't always get its sword into hand.** To switch weapons, the kill aura closes whatever's open and moves the sword into hand, through the inventory. If that happened in the middle of an errand, like storing things, crafting or swapping a tool, Block Miner carried on moving things around in the inventory at the same time, and could even carry on clicking in a screen the kill aura had closed, where every slot means something else.
 
-- **A section starts at the top of everything joined to that layer**, so a heap or a dome of it on top is included.
-- **A clump taller than it can reach from the bottom of it**, like a pocket of tuff, gets mined from the top down. Ore veins shorter than that are mined as before.
+Now, while the kill aura fights, errands keep their hands off the inventory. If a fight starts in the middle of one, the bot finishes moving anything it's halfway through moving, since the kill aura throws away whatever's on the cursor. Then it closes anything it has open, so the kill aura can switch weapons, and starts the errand again once the fight's over. That doesn't count as an errand failing. And it never clicks in a screen something else has closed.
 
-In a test pocket of tuff, it used to stay near the bottom, with the top 9 to 25 blocks above it. Now it stays about a block under the highest tuff left, all the way down, whether it starts below the pocket or above it, and never has to build.
-
-**Building took a long time over each block.** The building itself was quick. But building switched off after every walk, so each block it had to place first needed a search to fail, which takes up to 2 seconds, and then a wait before trying again with blocks. Now, after a walk that had to build, it keeps building for the next one if that's within 12 blocks. In a test, getting to 40 blocks left in a roof went from 85 seconds of path search to 3.5.
+Block Miner doesn't change any of the kill aura's own settings.
 
 ## Worth knowing
 
-- **Deepslate now starts a bit higher.** It's mixed in with stone up to Y 8, and that's all joined, so it starts from a level that can reach up to Y 8.
-- **It still only builds when a path has failed**, and then for what's close by. Anything further than 12 blocks away and it stops building, so it doesn't climb pillars out in the open.
-- **Why it was by the ender chest in the first place** isn't known for sure. In the tests, ore at the very top of its reach above a chest it had put down was enough to make it go and stand on the chest.
+- **If the bot still stands there without the kill aura hitting anything**, check `blockminer`. If its status doesn't start with `Leaving it to the kill aura`, it isn't Block Miner keeping it still. The kill aura holds the bot still itself while it's trying to get its weapon into hand. `killAura` shows its settings, including the weapon type and material it looks for.
+- **Plain piglins still need `killAura targetNeutralMobs on`**, as they count as neutral.
+
+## Also in this release
+
+Everything from 1.1.9, released just before this: it no longer stands on an ender chest all night logging `Pathing complete`, it mines tuff and anything like it from the top down, and building no longer takes a failed search before every block. See the [1.1.9 release](https://github.com/renegadeshiba/zenith-block-miner/releases/tag/v1.1.9) for the details.
 
 ## How this was tested
 
-The tests use ZenithProxy's real path search, goals and idea of where the bot's feet are, over made-up worlds. Standing on an ender chest, soul sand and mud was tested against the real thing. A tuff pocket was mined from start to finish with the real path search, and so was the roof left over from mining it the old way. Across six test worlds of coal, it leaves 22 ores showing to air against 27 for 1.1.8.
+The tests use the real kill aura's "has a target" state and feed the real module the same attack packets the kill aura sends. They cover the bot standing still while hits keep coming, carrying on when none do, and right-clicking something not counting as a hit. Errands were run against a pretend server, with fights starting with the ender chest, a shulker box or a crafting table open, and halfway through moving a tool. Nothing got lost or thrown away. All 427 tests pass, including with the CPU overloaded. The new code was broken on purpose in 22 ways to check that the tests notice, and they catch all of them. One part isn't covered by a test: an errand that fails after a fight not counting as a failure.
 
-All 416 tests pass, including with the CPU overloaded. The new code was broken on purpose in 31 ways to check that the tests notice, and they catch all of them.
-
-**None of this has been run on a live server yet**, and the tests have no mobs, lag or real walking. If it stops or does something odd, the Discord message or the lines from the log around that time will show what happened, so please send those.
+**It hasn't been run on a live server yet**, and the tests have no real fights. If it does something odd in a fight, the lines from the log around that time will show what happened, so please send those.
 
 ## Install
 
 ```
-plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.9/BlockMiner-1.1.9.jar
+plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.10/BlockMiner-1.1.10.jar
 restart
 ```
