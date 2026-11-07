@@ -33,9 +33,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import static com.zenith.Globals.BARITONE;
 import static com.zenith.Globals.CACHE;
+import static com.zenith.Globals.INVENTORY;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -271,6 +274,8 @@ class CraftingInBulkTest {
     private BlockMinerConfig previousConfig;
     private long startedAt;
 
+    private volatile boolean fightGoingOn;
+
     private void startWith(long latencyMs) {
         table = new FakeCraftingTable(latencyMs);
         BlockMinerModule module = new BlockMinerModule() {
@@ -279,7 +284,8 @@ class CraftingInBulkTest {
                 table.receive(packet);
             }
         };
-        Bot bot = new Bot(module, () -> true);
+        Bot bot = new Bot(module, () -> true, BARITONE, INVENTORY,
+            new Fights(() -> fightGoingOn, System::currentTimeMillis, () -> { }, () -> { }));
         crafting = new CraftingErrand(module, bot, new InventorySpace(module, bot));
         inventory().reset();
         inventory().openContainer(CONTAINER_ID, ContainerType.CRAFTING, Component.text("Crafting"));
@@ -346,6 +352,23 @@ class CraftingInBulkTest {
     // ----------------------------------------------------------------------------------------
     // with the recipe book
     // ----------------------------------------------------------------------------------------
+
+    /** The kill aura needs the inventory to get its weapon into hand, and the crafting table open stops it. */
+    @Test
+    void stopsCraftingForAFight() throws InterruptedException {
+        startWith(30);
+        recipeBookKnows(COAL_RECIPE);
+        carry(30, COAL);
+        fightGoingOn = true;
+        table.network.schedule(() -> fightGoingOn = false, 300, TimeUnit.MILLISECONDS);
+
+        assertThrows(ErrandAborted.class, () -> crafting.craftEverything());
+        table.settle();
+
+        assertEquals(0, table.recipeBookUses, "it shouldn't have crafted anything");
+        assertEquals(0, table.clicks);
+        assertEquals(0, inventory().getOpenContainerId(), "it should have closed the crafting table for it");
+    }
 
     @Test
     void craftsAllOfAFullInventoryInAFewGoes() throws InterruptedException {

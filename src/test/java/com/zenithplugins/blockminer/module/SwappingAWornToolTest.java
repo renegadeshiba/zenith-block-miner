@@ -89,6 +89,7 @@ class SwappingAWornToolTest {
         final ItemStack[] enderChest = new ItemStack[CONTAINER_SLOTS];
         final Map<String, ItemStack[]> shulkersPlaced = new HashMap<>();
         final List<ItemStack> onTheGround = new ArrayList<>();
+        int clicksReceived;
         int heldSlot;
         ItemStack cursor;
         // How long the contents of the containers it opens take to turn up, in the order it opens them, for the
@@ -136,6 +137,7 @@ class SwappingAWornToolTest {
 
         synchronized void receive(Packet packet) {
             if (packet instanceof ServerboundContainerClickPacket click) {
+                clicksReceived++;
                 // Zenith applies its own prediction as the packet goes out.
                 inventory().handleContainerClick(click);
                 if (click.getContainerId() != openId) return;
@@ -356,12 +358,24 @@ class SwappingAWornToolTest {
             return true;
         }
 
+        synchronized boolean somethingOpen() {
+            return open != null;
+        }
+
         synchronized boolean rightClick(int x, int y, int z) {
             ItemStack[] shulker = shulkersPlaced.get(key(x, y, z));
             if (shulker != null) {
                 openContainer(shulker, ContainerType.SHULKER_BOX);
+                if (fightWhenAShulkerBoxOpens) {
+                    fightWhenAShulkerBoxOpens = false;
+                    startAFight();
+                }
             } else {
                 openContainer(enderChest, ContainerType.GENERIC_9X3);
+                if (fightWhenTheEnderChestOpens) {
+                    fightWhenTheEnderChestOpens = false;
+                    startAFight();
+                }
             }
             return true;
         }
@@ -530,6 +544,8 @@ class SwappingAWornToolTest {
     // Fights that break out between one step of an errand and the next.
     private volatile boolean fightAfterTakingOutAShulkerBox;
     private volatile boolean fightJustAsItsPlaced;
+    private volatile boolean fightWhenAShulkerBoxOpens;
+    private volatile boolean fightWhenTheEnderChestOpens;
     private volatile int fightAfterClicksInAShulkerBox;
     private volatile boolean fightOnTheWay;
     private volatile int fightsWhenWalkingToADrop;
@@ -829,6 +845,71 @@ class SwappingAWornToolTest {
     @Test
     void aShulkerBoxPutDownJustAsAFightStartsStillCounts() throws InterruptedException {
         assertASwapStillWorksWith(() -> fightJustAsItsPlaced = true);
+    }
+
+    /** Half way through moving something, as the kill aura throws away whatever's on the cursor. */
+    @Test
+    void finishesMovingSomethingBeforeGivingWayToAFight() throws InterruptedException {
+        assertASwapStillWorksWith(() -> fightAfterClicksInAShulkerBox = 1);
+    }
+
+    /** The kill aura needs the inventory to get its weapon into hand, so the errand gets out of the way and starts again. */
+    @Test
+    void aFightWithTheShulkerBoxOpenClosesItAndStartsAgainWithoutLosingAnything() throws InterruptedException {
+        ItemStack worn = fortunePick(WORN);
+        ItemStack fresh = fortunePick(FRESH);
+        carry(HOTBAR_START, worn);
+        carryAFullInventoryOfCoal();
+        int coal = coalCarried();
+        server.enderChest[0] = toolShulker(fresh);
+        fightWhenAShulkerBoxOpens = true;
+
+        assertThrows(ErrandAborted.class, () -> swapWhatsInHand(ToolNeed.FORTUNE));
+        server.settle();
+
+        assertNull(server.cursor);
+        assertEquals(List.of(), server.onTheGround, "nothing should have been thrown out");
+        assertEquals(1, server.shulkersPlaced.size(), "the shulker box is still there, to go back for");
+        assertEquals(List.of(fresh), Arrays.stream(server.shulkersPlaced.values().iterator().next()).filter(Objects::nonNull).toList());
+        assertEquals(coal, coalCarried());
+        assertTrue(bot.gaveWayToAFight());
+        assertFalse(server.somethingOpen(), "it should have closed it, for the kill aura to get its weapon out");
+    }
+
+    /** With room to take the shulker box out, the first thing it does in the ender chest is shift-click it out. */
+    @Test
+    void aFightWithTheEnderChestOpenLeavesItAllThere() throws InterruptedException {
+        ItemStack fresh = fortunePick(FRESH);
+        carry(HOTBAR_START, fortunePick(WORN));
+        server.enderChest[0] = toolShulker(fresh);
+        fightWhenTheEnderChestOpens = true;
+
+        assertThrows(ErrandAborted.class, () -> swapWhatsInHand(ToolNeed.FORTUNE));
+        server.settle();
+
+        assertEquals(0, server.clicksReceived, "it shouldn't have taken anything out");
+        assertEquals(1, shulkersInTheEnderChest());
+        assertFalse(server.somethingOpen(), "it should have closed it, for the kill aura to get its weapon out");
+    }
+
+    @Test
+    void neverClicksInAScreenThatsBeenClosedUnderIt() throws InterruptedException {
+        ItemStack fresh = fortunePick(FRESH);
+        carryAFullInventoryOfCoal();
+        ItemStack[] contents = new ItemStack[CONTAINER_SLOTS];
+        contents[0] = fresh;
+        server.shulkersPlaced.put(key(1, FEET_Y, 0), contents);
+        world.set(1, FEET_Y, 0, BlockRegistry.SHULKER_BOX);
+        bot.openContainer(new int[]{1, FEET_Y, 0}, "The shulker box");
+
+        // As the kill aura does to get its weapon out.
+        inventory().closeContainer(inventory().getOpenContainerId());
+        int clicks = server.clicksReceived;
+
+        assertThrows(ErrandAborted.class, () -> bot.click(0, ClickItemAction.LEFT_CLICK));
+        assertFalse(bot.shiftClick(0), "and there's nothing open to shift-click in");
+        server.settle();
+        assertEquals(clicks, server.clicksReceived, "it shouldn't have clicked anything");
     }
 
     @Test

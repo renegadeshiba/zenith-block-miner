@@ -17,12 +17,12 @@ tool shulker box in the ender chest.
 Install or update directly from the Zenith terminal (or Discord as the account owner):
 
 ```
-plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.9/BlockMiner-1.1.9.jar
+plugins download https://github.com/renegadeshiba/zenith-block-miner/releases/download/v1.1.10/BlockMiner-1.1.10.jar
 restart
 ```
 
-Alternatively, download `BlockMiner-1.1.9.jar` from the
-[GitHub release](https://github.com/renegadeshiba/zenith-block-miner/releases/tag/v1.1.9), copy it into
+Alternatively, download `BlockMiner-1.1.10.jar` from the
+[GitHub release](https://github.com/renegadeshiba/zenith-block-miner/releases/tag/v1.1.10), copy it into
 the `plugins/` directory beside your ZenithProxy jar, and restart ZenithProxy.
 
 ## Getting started
@@ -312,6 +312,10 @@ while the kill aura has something in reach and is getting hits in, the bot stops
 there, whether it's mining, walking away or on an errand. It starts again 2 seconds after the last target, which
 gives anything that got knocked back time to come back. Without this, the pathfinder gets a turn between the kill
 aura's hits, and walks off, turns away, or swaps back to its pickaxe.
+
+**It keeps its hands off the inventory while the kill aura fights**, as that's what the kill aura needs to get its
+weapon into hand. If a fight starts during an errand, the bot finishes moving anything it's half way through moving,
+closes anything it has open, and starts the errand again once the fight's over.
 
 **It only stands still while the kill aura is hitting something.** It gives it 3 seconds to get a hit in, at the
 start of a fight and after each hit. If it hasn't, the bot carries on with what it was doing and logs it, at most

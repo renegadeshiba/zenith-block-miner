@@ -131,6 +131,7 @@ final class CraftingErrand {
     /** The recipe book only has recipes the server has unlocked for this account. Without one, it goes by hand. */
     private boolean fillGrid(ItemData input, ItemData output) {
         if (recipeBookWorks) {
+            bot.beforeTouchingTheInventory();
             int recipeId = findRecipe(input.id(), output.id());
             var packet = recipeId == -1 ? null : new PlaceRecipe(bot.openContainerId(), recipeId, true).packet();
             if (packet != null) {

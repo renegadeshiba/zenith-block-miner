@@ -104,6 +104,9 @@ final class Bot {
     private final Baritone pathfinder;
     private final InventoryManager inventoryManager;
     private final Fights fights;
+    /** What it opened itself, so that it notices when something else closes it. Zero if nothing. */
+    private volatile int containerOpenedHere;
+    private volatile boolean gaveWayToAFight;
     /** Chest position -> time it may be tried again. Only touched from the errand thread. */
     private final Map<String, Long> failedChests = new HashMap<>();
 
@@ -150,12 +153,42 @@ final class Bot {
         }
     }
 
-    /** A step of an errand that needs the bot's hands or feet would only get in the kill aura's way. */
-    private void waitOutAFight() {
+    /**
+     * Keeps out of the kill aura's way while it's fighting. Anything an errand does with the bot's hands, feet or
+     * inventory gets in the way of its next hit, or of it getting its weapon into hand. It closes whatever's open to
+     * do that, so this closes it for it, and then there's no carrying on, so the errand starts again afterwards.
+     */
+    void keepOutOfTheWayOfAFight() {
+        if (!fights.underWay()) return;
+        gaveWayToAFight = true;
+        boolean somethingOpen = openContainerId() != 0;
+        if (somethingOpen) closeContainer();
         while (fights.underWay()) {
             checkAlive();
             sleep(POLL_MS);
         }
+        if (somethingOpen) throw new ErrandAborted("A fight broke out with a container open, so it's starting again");
+    }
+
+    /**
+     * Before touching the inventory. The kill aura can also close what's open before this notices a fight, and
+     * clicking on regardless would click in the wrong screen, with every slot number meaning something else.
+     */
+    void beforeTouchingTheInventory() {
+        keepOutOfTheWayOfAFight();
+        if (containerOpenedHere != 0 && openContainerId() != containerOpenedHere) {
+            containerOpenedHere = 0;
+            throw new ErrandAborted("Something else closed the container it was using");
+        }
+    }
+
+    void errandStarting() {
+        gaveWayToAFight = false;
+    }
+
+    /** True if the errand under way has had to stop for the kill aura, which can undo anything it was doing. */
+    boolean gaveWayToAFight() {
+        return gaveWayToAFight;
     }
 
     /**
@@ -164,7 +197,7 @@ final class Bot {
      */
     private void run(Supplier<PathingRequestFuture> request, int timeoutMs, String what) {
         while (true) {
-            waitOutAFight();
+            keepOutOfTheWayOfAFight();
             PathingRequestFuture future = request.get();
             if (!waitFor(() -> future.isCompleted() || fights.underWay(), timeoutMs)) {
                 pathfinder.stop();
@@ -310,6 +343,7 @@ final class Bot {
 
     /** Shift-clicks a slot in the open container. False if Zenith says there's nowhere for it to go. */
     boolean shiftClick(int slot) {
+        beforeTouchingTheInventory();
         int containerId = openContainerId();
         if (containerId == 0) return false;
         var packet = new ShiftClick(containerId, slot, ShiftClickItemAction.LEFT_CLICK).packet();
@@ -320,6 +354,12 @@ final class Bot {
 
     /** Clicks a slot in the open container, or in the player's own inventory if nothing is open. */
     void click(int slot, ClickItemAction action) {
+        // Partway through moving something, it finishes first, as the kill aura throws away what's on the cursor.
+        if (cursorIsEmpty()) {
+            beforeTouchingTheInventory();
+        } else if (containerOpenedHere != 0 && openContainerId() != containerOpenedHere) {
+            beforeTouchingTheInventory();
+        }
         var packet = new ClickItem(openContainerId(), slot, action).packet();
         if (packet == null) throw ErrandFailed.retry("Couldn't click slot " + slot);
         module.sendClientPacketAsync(packet);
@@ -339,6 +379,7 @@ final class Bot {
 
     /** Throws a whole stack on the ground. False if it couldn't be dropped. */
     boolean dropStack(int slot) {
+        beforeTouchingTheInventory();
         var packet = new DropItem(openContainerId(), slot, DropItemAction.DROP_SELECTED_STACK).packet();
         if (packet == null) return false;
         module.sendClientPacketAsync(packet);
@@ -358,7 +399,7 @@ final class Bot {
         int sinceSubmit = 0;
         for (int check = 0; check < HOLD_TIMEOUT_CHECKS; check++) {
             checkAlive();
-            waitOutAFight();
+            keepOutOfTheWayOfAFight();
             int target = hotbarSlotFor(itemId);
             boolean inHand = CACHE.getPlayerCache().getHeldItemSlot() == target
                 && isItem(CACHE.getPlayerCache().getPlayerInventory().get(OWN_HOTBAR_START + target), itemId);
@@ -399,7 +440,7 @@ final class Bot {
                 && Objects.equals(now.getDataComponents(), moving.getDataComponents());
         };
         for (int attempt = 0; attempt < MAX_OPEN_ATTEMPTS; attempt++) {
-            waitOutAFight();
+            keepOutOfTheWayOfAFight();
             inventoryManager.submit(InventoryActionRequest.builder()
                 .owner(module)
                 .priority(Baritone.getPriority() + 1)
@@ -458,6 +499,7 @@ final class Bot {
                 run(() -> pathfinder.rightClickBlock(pos[0], pos[1], pos[2]), ACTION_TIMEOUT_MS, "Opening " + name);
                 if (waitFor(Bot::containerIsReady, ACTION_TIMEOUT_MS)) {
                     waitFor(Bot::contentsHaveArrived, CONTENTS_WAIT_MS);
+                    containerOpenedHere = openContainerId();
                     return;
                 }
             } catch (ErrandFailed e) {
@@ -491,6 +533,7 @@ final class Bot {
      * this also clears the cursor when only the player's own inventory is in use.
      */
     void closeContainer() {
+        containerOpenedHere = 0;
         InventoryCache inventory = inventory();
         int containerId = inventory.getOpenContainerId();
         if (containerId == 0 && cursorIsEmpty()) return;
@@ -636,7 +679,7 @@ final class Bot {
         if (waitFor(collected, PICKUP_WITHOUT_WALKING_MS)) return true;
 
         for (int attempt = 0; attempt < PICKUP_ATTEMPTS; attempt++) {
-            waitOutAFight();
+            keepOutOfTheWayOfAFight();
             makeRoom.run();
             Drop drop = findDrop(near, stack -> stack.getId() == itemId);
             int[] spot = drop != null ? drop.spot() : near;

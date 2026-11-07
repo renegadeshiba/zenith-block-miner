@@ -661,6 +661,7 @@ public class BlockMinerModule extends Module {
     }
 
     private void runErrand(int[] start) {
+        bot.errandStarting();
         try {
             collectPlacedShulker();
             storage.returnCarriedShulkers();
@@ -692,7 +693,11 @@ public class BlockMinerModule extends Module {
             info("Errand interrupted: {}. It'll pick up where it left off", e.getMessage());
             status = "Paused";
         } catch (ErrandFailed e) {
-            if (e.worthRetrying()) {
+            if (bot.gaveWayToAFight()) {
+                // What the kill aura did with the inventory while it fought is the likeliest reason, so it doesn't count.
+                info("Errand interrupted by a fight: {}. It'll start again", e.getMessage());
+                status = "Paused";
+            } else if (e.worthRetrying()) {
                 errandFailed(e.getMessage());
                 roomNeeded = e.needsRoom();
             } else {
