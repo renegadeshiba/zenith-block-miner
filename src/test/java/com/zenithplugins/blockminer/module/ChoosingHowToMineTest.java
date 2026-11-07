@@ -506,6 +506,7 @@ class ChoosingHowToMineTest {
             waitForPath();
             pathEnds(false);
             waitForPath();
+            TestWorld.putBotAt(9.5 + round, -30, 8.5);
             pathEnds(true);
         }
 
@@ -600,6 +601,153 @@ class ChoosingHowToMineTest {
         assertFalse(module.errandRunning());
         assertTrue(followingAPath());
         assertEquals("Climbing out from [8, -30, 8]", module.status());
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // not getting anything done
+    // ----------------------------------------------------------------------------------------
+
+    /** What it did all night on top of an ender chest: every walk was over at once, and that counted as getting there. */
+    @Test
+    void arrivingWithoutMovingAgainAndAgainCountsAsNotGettingThere() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        for (int arrival = 0; arrival < 3; arrival++) {
+            waitForPath();
+            pathEnds(true);
+        }
+
+        assertFalse(outOfReach().isEmpty(), "it should give up on what it was going for");
+        assertEquals("Waiting: can't find a way to anything it can mine from here", module.status());
+    }
+
+    @Test
+    void arrivingWithoutMovingOnceOrTwiceIsFine() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        for (int arrival = 0; arrival < 2; arrival++) {
+            waitForPath();
+            pathEnds(true);
+        }
+
+        assertTrue(outOfReach().isEmpty());
+    }
+
+    @Test
+    void goingSomewhereStartsTheCountOfArrivalsAgain() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        for (double x : new double[]{8.5, 8.5, 9.5, 9.5, 9.5 - 1, 8.5, 8.5}) {
+            waitForPath();
+            TestWorld.putBotAt(x, -30, 8.5);
+            pathEnds(true);
+        }
+
+        assertTrue(outOfReach().isEmpty());
+    }
+
+    /** It breaks a block without moving, and that really is getting something done. */
+    @Test
+    void miningABlockOverheadIsntArrivingWithoutMoving() throws Exception {
+        want("cobbled_deepslate");
+        putBotOnTheTopLevel();
+
+        for (int block = 0; block < 3; block++) {
+            waitForMiningABlock();
+            pathEnds(true);
+        }
+
+        assertTrue(outOfReach().isEmpty());
+    }
+
+    /** Arriving where it already is, and then mining what's above it from there, which really is getting something done. */
+    @Test
+    void miningABlockOverheadAfterArrivingWithoutMovingStartsTheCountAgain() throws Exception {
+        want("cobbled_deepslate");
+        putBotOnTheTopLevel();
+        for (int y = -5; y <= -1; y++) world.set(8, y, 8, BlockRegistry.AIR);
+
+        waitForPath();
+        pathEnds(true);
+        waitForPath();
+        for (int y = -5; y <= -1; y++) world.set(8, y, 8, BlockRegistry.DEEPSLATE);
+        pathEnds(true);
+        waitForMiningABlock();
+        pathEnds(true);
+
+        assertTrue(outOfReach().isEmpty(), "that was two arrivals and then a block mined");
+    }
+
+    /** Every walk goes somewhere and ends well, so that nothing else ever notices it's not getting anywhere. */
+    private int ticksGoingBackAndForth(java.util.function.IntConsumer eachWalk) throws Exception {
+        int ticks = 0;
+        for (int walk = 0; walk < 60; walk++) {
+            waitForPath();
+            eachWalk.accept(walk);
+            tick(100);
+            ticks += 100;
+            if (module.status().startsWith("Walking away")) break;
+            pathEnds(true);
+        }
+        return ticks;
+    }
+
+    @Test
+    void walksAwayAfterMinutesOfGoingBackAndForthWithNothingToShowForIt() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        int ticks = ticksGoingBackAndForth(walk -> TestWorld.putBotAt(walk % 2 == 0 ? 9.5 : 8.5, -30, 8.5));
+
+        assertTrue(module.status().startsWith("Walking away"), "status: " + module.status());
+        assertTrue(ticks >= 3 * A_MINUTE - 200, "that was too soon, after " + ticks);
+        assertTrue(ticks <= 3 * A_MINUTE + 200, "that was too late, after " + ticks);
+    }
+
+    @Test
+    void goingSomewhereIsGettingSomethingDone() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        ticksGoingBackAndForth(walk -> TestWorld.putBotAt(walk % 2 == 0 ? 16.5 : 8.5, -30, 8.5));
+
+        assertFalse(module.status().startsWith("Walking away"), "status: " + module.status());
+    }
+
+    @Test
+    void pickingSomethingUpIsGettingSomethingDone() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        ticksGoingBackAndForth(walk -> {
+            TestWorld.putBotAt(walk % 2 == 0 ? 9.5 : 8.5, -30, 8.5);
+            CACHE.getPlayerCache().getInventoryCache().getPlayerInventory()
+                .setItemStack(INVENTORY_SLOT, new ItemStack(ItemRegistry.COBBLED_DEEPSLATE.id(), 1 + walk % 64));
+        });
+
+        assertFalse(module.status().startsWith("Walking away"), "status: " + module.status());
+    }
+
+    @Test
+    void aFightDoesntCountAsGettingNothingDone() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        for (int walk = 0; walk < 30; walk++) {
+            waitForPath();
+            TestWorld.putBotAt(walk % 2 == 0 ? 9.5 : 8.5, -30, 8.5);
+            tick(100);
+            pathEnds(true);
+        }
+
+        killAuraHasATarget(true);
+        tick(2 * A_MINUTE);
+        killAuraHasATarget(false);
+        waitForPath();
+
+        assertFalse(module.status().startsWith("Walking away"), "status: " + module.status());
     }
 
     private final KillAura killAura = new KillAura();
@@ -890,6 +1038,83 @@ class ChoosingHowToMineTest {
         assertTrue(outOfReach().isEmpty());
     }
 
+    /** A walk that has to build to get there, with building allowed after a path that couldn't be found without. */
+    private void buildsToGetThere(Runnable onTheWay) throws Exception {
+        waitForPath();
+        pathEnds(false);
+        waitForPath();
+        assertTrue(allowedToBuildWith("cobbled_deepslate"));
+        world.set(9, -30, 8, BlockRegistry.AIR);
+        clicksOn(9, -31, 8, Direction.UP);
+        onTheWay.run();
+        TestWorld.putBotAt(9.5, -30, 8.5);
+        pathEnds(true);
+    }
+
+    @Test
+    void keepsBuildingForWhatsNextAfterAWalkThatHadToBuild() throws Exception {
+        want("obsidian");
+        world.set(10, -30, 8, BlockRegistry.OBSIDIAN);
+        world.set(13, -30, 8, BlockRegistry.OBSIDIAN);
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        buildsToGetThere(() -> world.set(10, -30, 8, BlockRegistry.AIR));
+        waitForPath();
+
+        assertEquals(List.of(new BlockPos(13, -30, 8)), blocksItsGoingFor());
+        assertTrue(allowedToBuildWith("cobbled_deepslate"), "it'll most likely need to for what's next to it, too");
+    }
+
+    @Test
+    void stopsBuildingOnceAWalkDoesntNeedTo() throws Exception {
+        want("obsidian");
+        world.set(10, -30, 8, BlockRegistry.OBSIDIAN);
+        world.set(13, -30, 8, BlockRegistry.OBSIDIAN);
+        world.set(16, -30, 8, BlockRegistry.OBSIDIAN);
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        buildsToGetThere(() -> world.set(10, -30, 8, BlockRegistry.AIR));
+
+        waitForPath();
+        assertTrue(allowedToBuildWith("cobbled_deepslate"), "it's only next to it");
+        world.set(13, -30, 8, BlockRegistry.AIR);
+        TestWorld.putBotAt(12.5, -30, 8.5);
+        pathEnds(true);
+
+        assertFalse(allowedToBuildWith("cobbled_deepslate"), "that one didn't need it");
+    }
+
+    /** Any further, and building means pillars out in the open. */
+    @Test
+    void stopsBuildingToGoAnywhereFurtherThanJustNextToIt() throws Exception {
+        want("obsidian");
+        world.set(10, -30, 8, BlockRegistry.OBSIDIAN);
+        world.set(40, -30, 40, BlockRegistry.OBSIDIAN);
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        buildsToGetThere(() -> world.set(10, -30, 8, BlockRegistry.AIR));
+        waitForPath();
+
+        assertEquals(List.of(new BlockPos(40, -30, 40)), blocksItsGoingFor());
+        assertFalse(allowedToBuildWith("cobbled_deepslate"));
+    }
+
+    @Test
+    void stopsBuildingToGoLookingForMore() throws Exception {
+        want("obsidian");
+        world.set(10, -30, 8, BlockRegistry.OBSIDIAN);
+        setSlot(INVENTORY_SLOT, ItemRegistry.COBBLED_DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        buildsToGetThere(() -> world.set(10, -30, 8, BlockRegistry.AIR));
+        waitForPath();
+
+        assertTrue(module.status().startsWith("Looking for"), "status: " + module.status());
+        assertFalse(allowedToBuildWith("cobbled_deepslate"));
+    }
+
     private void clicksOn(int x, int y, int z, Direction face) {
         module.getClientPacketHandlerCodec().getStateCodecs().get(ProtocolState.GAME).handlePostOutgoing(
             new ServerboundUseItemOnPacket(x, y, z, face, Hand.MAIN_HAND, 0.5f, 0.5f, 0.5f, false, false, 0), null);
@@ -1083,7 +1308,7 @@ class ChoosingHowToMineTest {
 
         for (int block = 1; block <= 5; block++) {
             tick(A_MINUTE - 100);
-            TestWorld.putBotAt(8.5 + block, -30, 8.5);
+            TestWorld.putBotAt(8.5 + block * 4, -30, 8.5);
         }
         tick(5);
 

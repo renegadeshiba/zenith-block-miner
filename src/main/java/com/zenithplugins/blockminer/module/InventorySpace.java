@@ -59,6 +59,15 @@ final class InventorySpace {
             : Set.of();
     }
 
+    /** How many of what it's after it's carrying. */
+    int targetItemsCarried() {
+        Set<String> targets = targetItems();
+        return bot.playerStacks().stream()
+            .filter(entry -> targets.contains(nameOf(entry.stack())))
+            .mapToInt(entry -> entry.stack().getAmount())
+            .sum();
+    }
+
     private List<Integer> junkSlots() {
         return InventoryPlan.slotsToThrowAway(
             bot.playerStacks(), targetItems(), PLUGIN_CONFIG.keepItems, bridgingItems(), PLUGIN_CONFIG.stillToStore);

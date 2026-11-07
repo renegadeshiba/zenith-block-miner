@@ -11,6 +11,7 @@ import com.zenith.feature.pathfinder.process.InteractWithProcess;
 import com.zenith.feature.pathfinder.process.MineProcess;
 import com.zenith.feature.pathfinder.util.BlockOptionalMetaLookup;
 import com.zenith.feature.player.World;
+import com.zenith.mc.block.Block;
 import com.zenith.mc.block.BlockPos;
 import com.zenith.mc.block.BlockRegistry;
 import com.zenith.mc.item.ItemRegistry;
@@ -26,6 +27,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 
+import static com.zenith.Globals.BARITONE;
 import static com.zenith.Globals.CACHE;
 import static com.zenith.Globals.CONFIG;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -235,12 +237,12 @@ class BlockScanTest {
     }
 
     @Test
-    void theTopIsTheHighestLayerThatsMostlyWhatItWants() {
+    void theTopIsTheTopOfWhatsJoinedToWhereItsMostlyWhatItWants() {
         realisticWorld();
         TestWorld.putBotAt(8.5, -30, 8.5);
 
-        // Deepslate thins out going up from 0 to 8, and it's under half of a layer from 5 up.
-        assertEquals(4, topOfSection(DEEPSLATE));
+        // Deepslate thins out going up from 0 to 8, and it's under half of a layer from 5 up, but it's all joined.
+        assertEquals(8, topOfSection(DEEPSLATE));
     }
 
     @Test
@@ -248,9 +250,9 @@ class BlockScanTest {
         realisticWorld();
 
         TestWorld.putBotAt(8.5, 70, 8.5);
-        assertEquals(4, topOfSection(DEEPSLATE));
+        assertEquals(8, topOfSection(DEEPSLATE));
         TestWorld.putBotAt(8.5, LOWEST_LEVEL, 8.5);
-        assertEquals(4, topOfSection(DEEPSLATE));
+        assertEquals(8, topOfSection(DEEPSLATE));
     }
 
     /** About 3.5% of a section. */
@@ -278,6 +280,55 @@ class BlockScanTest {
         TestWorld.putBotAt(8.5, 40, 8.5);
 
         assertNull(topOfSection(DEEPSLATE));
+    }
+
+    /** A heap of deepslate on top of what's mostly deepslate, which is only a little of each layer it's on. */
+    @Test
+    void whatsPiledOnTopOfWhereItsMostlyWhatItWantsCountsAsTheTop() {
+        world.layer(-64, -1, BlockRegistry.DEEPSLATE);
+        world.layer(0, 30, BlockRegistry.STONE);
+        for (int height = 0; height < 6; height++) {
+            int across = 6 - height;
+            for (int x = 8 - across; x <= 8 + across; x++) {
+                for (int z = 8 - across; z <= 8 + across; z++) world.set(x, height, z, BlockRegistry.DEEPSLATE);
+            }
+        }
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        assertEquals(5, topOfSection(DEEPSLATE));
+    }
+
+    /** Deepslate up to -1 across the west half of the section, which is all that's solid on those layers. */
+    private void halfASectionOfDeepslate() {
+        for (int x = world.minX(); x <= 8; x++) {
+            for (int z = world.minX(); z <= world.maxX(); z++) {
+                for (int y = -64; y <= -1; y++) world.set(x, y, z, BlockRegistry.DEEPSLATE);
+            }
+        }
+    }
+
+    @Test
+    void whatIsntJoinedDoesntCountAsTheTop() {
+        halfASectionOfDeepslate();
+        world.layer(0, 0, BlockRegistry.STONE);
+        // Enough of a layer to count if it were joined, over in the east half where there's nothing under it.
+        for (int x = 20; x < 28; x++) {
+            for (int z = 0; z < 8; z++) world.set(x, 0, z, BlockRegistry.DEEPSLATE);
+        }
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        assertEquals(-1, topOfSection(DEEPSLATE));
+    }
+
+    /** Joined by an arm reaching out sideways from what's under it, rather than straight up. */
+    @Test
+    void whatsJoinedSidewaysCountsToo() {
+        halfASectionOfDeepslate();
+        for (int x = 8; x <= 20; x++) world.set(x, 0, 8, BlockRegistry.DEEPSLATE);
+        world.set(20, 1, 8, BlockRegistry.DEEPSLATE);
+        TestWorld.putBotAt(8.5, -30, 8.5);
+
+        assertEquals(1, topOfSection(DEEPSLATE));
     }
 
     @Test
@@ -741,19 +792,214 @@ class BlockScanTest {
         assertFalse(goal.goal().isInGoal(10, 20, 8));
     }
 
+    // ----------------------------------------------------------------------------------------
+    // a clump of something, like tuff, taller than it can reach from the bottom of it
+    // ----------------------------------------------------------------------------------------
+
+    private static final BlockOptionalMetaLookup TUFF = new BlockOptionalMetaLookup(BlockRegistry.TUFF);
+
+    /** Not nearly enough of a section to mine a level at a time, so it goes to it the way it would go to ore. */
+    private void pocketOfTuff(int bottom, int height, int across) {
+        world.layer(-64, 8, BlockRegistry.DEEPSLATE);
+        for (int y = bottom; y < bottom + height; y++) {
+            for (int x = 8 - across; x <= 8 + across; x++) {
+                for (int z = 8 - across; z <= 8 + across; z++) world.set(x, y, z, BlockRegistry.TUFF);
+            }
+        }
+    }
+
+    /** Below it and off to the side, so that there's none of it straight above the bot to mine from there. */
+    private BlockPos roomUnder(int bottom) {
+        BlockPos feet = new BlockPos(8, bottom - 3, 2);
+        airAt(feet);
+        TestWorld.putBotAt(8.5, feet.y(), 2.5);
+        return feet;
+    }
+
     @Test
-    void doesntStayUnderOreThatItCantMineFromThere() {
-        // Zenith says it can't reach it, and a walk to where it's standing would be over before it started, every time.
+    void goesForTheTopOfAClumpTooTallToReachFromTheBottom() {
+        pocketOfTuff(-40, 12, 2);
+        roomUnder(-40);
+
+        BlockScan.MiningGoal goal = goalAnywhere(TUFF);
+
+        assertNotNull(goal);
+        assertTrue(goal.blocks().stream().allMatch(pos -> pos.y() == -29), "should be the top, not " + goal.blocks());
+        assertEquals(new BlockPos(8, -29, 6), goal.blocks().getFirst(), "and nearest the bot first");
+        assertEquals(4, goal.blocks().size(), "the next few of the top");
+    }
+
+    /** Standing at the bottom of it, it reaches the underside of a block 6 above its feet, which is 7 high. */
+    @Test
+    void aClumpJustTooTallToReachFromTheBottomCountsAsTooTall() {
+        pocketOfTuff(-40, 8, 2);
+        roomUnder(-40);
+
+        BlockScan.MiningGoal goal = goalAnywhere(TUFF);
+
+        assertNotNull(goal);
+        assertEquals(-33, goal.blocks().getFirst().y());
+    }
+
+    @Test
+    void leavesOutTheTopOfAClumpWhereItCouldntGetTo() {
+        pocketOfTuff(-40, 12, 2);
+        roomUnder(-40);
+        Set<BlockPos> outOfReach = new HashSet<>();
+        for (int x = 6; x <= 10; x++) {
+            for (int z = 6; z <= 10; z++) outOfReach.add(new BlockPos(x, -29, z));
+        }
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(TUFF, sectionAroundBot(), outOfReach);
+
+        assertNotNull(goal);
+        assertTrue(goal.blocks().stream().allMatch(pos -> pos.y() == -30), "going for " + goal.blocks());
+    }
+
+    /** Something it can stand in, at the top of a clump of it, where a walk to it would be over before it started. */
+    @Test
+    void leavesOutWhatItsStandingInAtTheTopOfAClump() {
+        world.layer(-64, 8, BlockRegistry.DEEPSLATE);
+        for (int y = -40; y <= -31; y++) world.set(8, y, 8, BlockRegistry.COBWEB);
+        world.set(8, -30, 8, BlockRegistry.AIR);
+        TestWorld.putBotAt(8.5, -32, 8.5);
+        BlockPos feet = BARITONE.getPlayerContext().playerFeet();
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(
+            new BlockOptionalMetaLookup(BlockRegistry.COBWEB), sectionAroundBot(), NOTHING_OUT_OF_REACH);
+
+        assertNotNull(goal);
+        assertNotNull(goal.goal());
+        assertFalse(goal.goal().isInGoal(feet), "going for " + goal.blocks());
+    }
+
+    @Test
+    void goesForTheNearestOfAClumpItCanReachAllOfFromTheBottom() {
+        pocketOfTuff(-40, 7, 2);
+        roomUnder(-40);
+
+        BlockScan.MiningGoal goal = goalAnywhere(TUFF);
+
+        assertNotNull(goal);
+        assertEquals(new BlockPos(8, -40, 6), goal.blocks().getFirst());
+    }
+
+    @Test
+    void goesForTheTopsOfTheNearestFewClumps() {
+        world.layer(-64, 8, BlockRegistry.DEEPSLATE);
+        for (int y = -40; y <= -30; y++) {
+            world.set(10, y, 8, BlockRegistry.TUFF);
+            world.set(6, y, 8, BlockRegistry.TUFF);
+        }
+        TestWorld.putBotAt(8.5, -40, 8.5);
+        airAt(new BlockPos(8, -40, 8));
+
+        BlockScan.MiningGoal goal = goalAnywhere(TUFF);
+
+        assertNotNull(goal);
+        assertTrue(goal.blocks().contains(new BlockPos(10, -30, 8)), "going for " + goal.blocks());
+        assertTrue(goal.blocks().contains(new BlockPos(6, -30, 8)), "going for " + goal.blocks());
+    }
+
+    /** What it did before: dug out the bottom, and then had to build its way up to what was left in the roof. */
+    @Test
+    void minesAPocketOfTuffFromTheTopDownWithoutHavingToBuild() {
+        pocketOfTuff(-40, 12, 2);
+        BlockPos start = roomUnder(-40);
+        PretendBot bot = new PretendBot(world, start, TUFF);
+        int inThePocket = 12 * 5 * 5;
+        int lowestWhileTheTopWasLeft = Integer.MAX_VALUE;
+
+        for (int step = 0; step < 1000 && bot.wantedBroken < inThePocket; step++) {
+            area = new BlockScan.MiningArea(bot.at.x(), bot.at.z(), RADIUS);
+            BlockScan.MiningGoal goal = BlockScan.miningGoal(TUFF, area, NOTHING_OUT_OF_REACH);
+            assertNotNull(goal, "nothing to mine at " + bot.at);
+            assertTrue(bot.carryOut(goal), "stuck at " + bot.at + " going for " + goal.blocks());
+            if (World.getBlock(8, -29, 8) == BlockRegistry.TUFF) lowestWhileTheTopWasLeft = Math.min(lowestWhileTheTopWasLeft, bot.at.y());
+        }
+
+        assertEquals(inThePocket, bot.wantedBroken);
+        assertEquals(0, bot.blocksPlaced, "it shouldn't have had to build to get to any of it");
+        assertTrue(lowestWhileTheTopWasLeft >= -36, "it went down to " + lowestWhileTheTopWasLeft + " with the top still there");
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // standing on something less than a block high
+    // ----------------------------------------------------------------------------------------
+
+    /** An ender chest it put down itself, soul sand all over the Nether, and mud. */
+    private static final List<Block> SHORT_BLOCKS = List.of(BlockRegistry.ENDER_CHEST, BlockRegistry.SOUL_SAND, BlockRegistry.MUD);
+    private static final double ON_TOP_OF_A_SHORT_BLOCK = 20.875;
+
+    /**
+     * What it was doing all night. The pathfinder says it's standing in the block above an ender chest, so a goal up
+     * there is over as soon as it starts, and that counts as having got there. It was sent back there over and over.
+     */
+    @Test
+    void doesntGoWhereItAlreadyIsOnTopOfSomethingShort() {
+        for (Block floor : SHORT_BLOCKS) {
+            botInATunnel();
+            world.set(10, 20, 8, floor);
+            // As high as it can stand under something, from up here, and just out of its reach from a bit lower down.
+            oreInTheCeilingAt(10, 27, 8);
+            TestWorld.putBotAt(10.5, ON_TOP_OF_A_SHORT_BLOCK, 8.5);
+            BlockPos feet = BARITONE.getPlayerContext().playerFeet();
+            assertEquals(new BlockPos(10, 21, 8), feet, "where the pathfinder says it is, on " + floor.name());
+
+            BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(10, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+            assertNotNull(goal);
+            if (goal.goal() != null) {
+                assertFalse(goal.goal().isInGoal(feet), "the walk would be over before it started, every time, on " + floor.name());
+            }
+        }
+    }
+
+    @Test
+    void stillMinesWhatsAboveItOnTopOfSomethingShort() {
+        for (Block floor : SHORT_BLOCKS) {
+            botInATunnel();
+            world.set(10, 20, 8, floor);
+            oreInTheCeilingAt(10, 25, 8);
+            TestWorld.putBotAt(10.5, ON_TOP_OF_A_SHORT_BLOCK, 8.5);
+
+            BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(10, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+            assertNotNull(goal);
+            assertNull(goal.goal(), "it can reach it from there, on " + floor.name());
+            assertEquals(List.of(new BlockPos(10, 25, 8)), goal.blocks());
+        }
+    }
+
+    @Test
+    void canStillGoOntoSomethingShortToMineWhatsAboveIt() {
         botInATunnel();
-        oreInTheCeilingAt(8, 24, 8);
-        TestWorld.putBotAt(8.5, 10, 8.5);
-        CACHE.getPlayerCache().setY(20);
+        world.set(10, 20, 8, BlockRegistry.ENDER_CHEST);
+        oreInTheCeilingAt(10, 25, 8);
+        TestWorld.putBotAt(8.5, 20, 8.5);
 
         BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(8, 8, RADIUS), NOTHING_OUT_OF_REACH);
 
         assertNotNull(goal);
-        assertNotNull(goal.goal(), "it can't mine it from here");
-        assertFalse(goal.goal().isInGoal(8, 20, 8));
+        assertTrue(goal.goal().isInGoal(10, 21, 8));
+    }
+
+    /** It can be in something it's after, if nothing stops it standing there, and a walk to that is over at once too. */
+    @Test
+    void leavesOutWhatItsStandingInOnTopOfSomethingShort() {
+        botInATunnel();
+        world.set(10, 20, 8, BlockRegistry.ENDER_CHEST);
+        world.set(10, 22, 8, BlockRegistry.COBWEB);
+        world.set(14, 20, 8, BlockRegistry.COBWEB);
+        TestWorld.putBotAt(10.5, ON_TOP_OF_A_SHORT_BLOCK, 8.5);
+        BlockPos feet = BARITONE.getPlayerContext().playerFeet();
+
+        BlockScan.MiningGoal goal = BlockScan.miningGoal(
+            new BlockOptionalMetaLookup(BlockRegistry.COBWEB), new BlockScan.MiningArea(10, 8, RADIUS), NOTHING_OUT_OF_REACH);
+
+        assertNotNull(goal);
+        assertNotNull(goal.goal(), "the one at its head doesn't need mining to stand in it");
+        assertFalse(goal.goal().isInGoal(feet));
     }
 
     @Test
@@ -763,8 +1009,7 @@ class BlockScanTest {
         for (int air = 19; air >= 16; air--) world.set(8, air, 8, BlockRegistry.AIR);
         oreInTheCeilingAt(8, 21, 8);
         world.set(8, 21, 8, BlockRegistry.COAL_ORE);
-        TestWorld.putBotAt(8.5, 10, 8.5);
-        CACHE.getPlayerCache().setY(30);
+        TestWorld.putBotAt(8.5, 30, 8.5);
 
         BlockScan.MiningGoal goal = BlockScan.miningGoal(COAL, new BlockScan.MiningArea(8, 8, RADIUS), NOTHING_OUT_OF_REACH);
 
@@ -906,7 +1151,7 @@ class BlockScanTest {
         BlockScan.MiningGoal goal = mineNext(bot);
 
         assertFalse(goal.onBotsLevel());
-        assertEquals(-2, bot.at.y(), "low enough to reach the top layer, at 4, from its floor");
+        assertEquals(2, bot.at.y(), "low enough to reach the top layer, at 8, from its floor");
     }
 
     @Test
@@ -921,7 +1166,7 @@ class BlockScanTest {
         for (int step = 0; step < 300; step++) {
             BlockScan.MiningGoal goal = mineNext(bot);
             assertTrue(goal.onBotsLevel(), "gave up on its level at " + bot.at);
-            assertEquals(-2, bot.at.y());
+            assertEquals(2, bot.at.y());
         }
 
         int wanted = bot.wantedBroken - wantedBefore;
@@ -1168,9 +1413,10 @@ class BlockScanTest {
     @Test
     void leavesWhatZenithSaysItCantReach() {
         botOnALevel();
-        // Zenith goes by where it thinks the bot's eyes are, so this puts it a long way out of reach of them.
-        TestWorld.putBotAt(8.5, ON_LEVEL - 10, 8.5);
-        CACHE.getPlayerCache().setY(ON_LEVEL);
+        // Standing on something a bit short of a block high, this is just out of reach of its eyes.
+        setAbove(-1, BlockRegistry.SOUL_SAND);
+        for (int height = 2; height < 6; height++) setAbove(height, BlockRegistry.AIR);
+        TestWorld.putBotAt(8.5, ON_LEVEL - 0.125, 8.5);
 
         assertNotNull(goalNow().goal(), "it walks on instead");
     }
@@ -1835,7 +2081,7 @@ class BlockScanTest {
 
         assertNotNull(goal);
         assertNull(goal.area(), "it starts a new section from wherever it ends up");
-        assertTrue(goal.goal().isInGoal(12, 25, 8));
+        assertEquals(new BlockPos(12, 30, 8), goal.blocks().getFirst(), "it goes for the top of it");
     }
 
     @Test

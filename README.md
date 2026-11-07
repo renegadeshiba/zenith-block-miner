@@ -132,8 +132,9 @@ What it does next depends on what you asked for.
 **Blocks that are everywhere**, such as deepslate, stone or netherrack, get mined from the top down, one
 section at a time. A section is everything within 24 blocks of where it starts.
 
-1. It goes to the top of the section, which is the highest layer that's mostly what you asked for. It digs
-   its way there from wherever it is, and the status says `Walking to the nearest ...` until it arrives.
+1. It goes to the top of the section. That's the top of whatever's joined to the highest layer that's mostly
+   what you asked for, so a heap of it on top counts too. It digs its way there from wherever it is, and the
+   status says `Walking to the nearest ...` until it arrives.
 2. At each spot it mines everything it can reach straight above it without moving, which clears a room 7
    blocks high. What it mines falls on it, so it collects it. Then it moves to the next spot along a flat
    floor, collecting what's at its feet and head as it walks in.
@@ -145,8 +146,8 @@ section at a time. A section is everything within 24 blocks of where it starts.
 digging, but if the bot can't really climb one, the pathfinder just plans the same way up again, forever. So it
 digs its way around them, and only goes on one if there's no other way at all.
 
-A few odd blocks don't count as the top, and neither does a layer that's mostly something else. So for
-deepslate it starts about where stone gives way to deepslate, not at a stray block higher up.
+A few odd blocks that aren't joined to the rest don't count as the top. Deepslate is mixed in with stone up to
+Y 8, and it's all joined, so it starts with that, from a level that can reach up to Y 8.
 
 At each spot, it mines through something you didn't ask for if there's more of what you want above it,
 the same as it does when it walks. It stops there if it comes to something that would fall on it, anything
@@ -156,7 +157,9 @@ cave under them that it can't stand on, so expect a few bits left hanging.
 **Blocks worth looking for**, such as ores, aren't kept to a section, since there wouldn't be many in it. It
 goes for the nearest few in the loaded chunks, at any height, and clears what's around it before moving on. It
 mines anything it can reach straight above it without moving, digging through what's in the way, and for ore
-in a ceiling, it stands underneath. If none are loaded, it goes looking for
+in a ceiling, it stands underneath. A clump of something taller than it can reach from the bottom of it, like a
+pocket of tuff, it goes to the top of, and mines from the top down, so none of it ends up out of reach in the roof
+of the hole it's dug. If none are loaded, it goes looking for
 more, heading off in a straight line until some come into range, and the status says `Looking for ...`.
 So don't leave the bot mining somewhere it shouldn't dig.
 
@@ -346,7 +349,9 @@ If the bot can't find a way to something, it tries these in order:
 1. **Building.** It tries again, this time allowed to place blocks it's carrying, including what it's been
    mining. The pathfinder only builds with blocks on its `acceptableThrowawayItems` list, which doesn't include
    things like cobbled deepslate, so the bot adds common solid blocks it's carrying to that list until a path
-   works, and then takes off what it added.
+   works without them, and then takes off what it added. After a walk that had to build, it keeps building for
+   the next one if that's within 12 blocks, as it most likely needs to again. Otherwise every walk has to fail
+   first to find that out, which took far longer than the building itself.
 2. **Moving on.** What's left at the end of a level is often hard to get to, like blocks next to lava. After 3
    tries it gives up on what's left of that level and goes on to the next. That doesn't count as being stuck.
 3. **Walking away.** If it can't get to anything at all, it walks 100 blocks in a straight line, trying each
@@ -355,15 +360,20 @@ If the bot can't find a way to something, it tries these in order:
    out of a pit in the bedrock.
 
 **A walk that isn't getting anywhere counts as a path it can't find.** If it hasn't been anywhere new for a minute,
-it gives up on it and carries on as above, so it can't spend hours on something like a vine it can't climb.
+it gives up on it and carries on as above, so it can't spend hours on something like a vine it can't climb. The
+same goes for arriving 3 times in a row without having moved, as the pathfinder calls that getting there.
+
+**If it gets nothing done for 3 minutes, it walks away**, whatever the reason. That's going under 8 blocks from
+where it was, and not picking up any more of what it's after, while it's meant to be mining, so errands and fights
+don't count. This is for anything else that could keep it standing around all night, and it's logged if it happens.
 
 You'll get a notification saying where it is if none of that works, or if it gets stuck 6 times in a row
 without getting any mining done in between. Each of these steps also goes in the log, so that's the place to
 look if you want to know what happened while you were away.
 
-**It only builds when it has to.** Left to build whenever it likes, the pathfinder climbs between levels on
-pillars out in the open instead of digging stairs through the rock, and an arrow or a creeper up there is a
-long fall with the whole inventory.
+**It only builds when it has to**, and for what's close by once it has. Left to build whenever it likes, the
+pathfinder climbs between levels on pillars out in the open instead of digging stairs through the rock, and an
+arrow or a creeper up there is a long fall with the whole inventory.
 
 **It leaves the blocks it places alone**, even though they look just like what it's after, so it doesn't pull
 down what it built. It only remembers them until ZenithProxy restarts, and the pathfinder can still break one

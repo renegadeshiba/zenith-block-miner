@@ -56,10 +56,19 @@ public class BlockMinerModule extends Module {
     private static final int MINING_OVERHEAD_TIMEOUT_TICKS = 20 * 30;
     // Long enough to mine anything it's likely to walk through, even with a server that's struggling.
     private static final int GETTING_NOWHERE_TICKS = 20 * 60;
+    // A walk that's over as soon as it starts should be rare, so a few in a row means it isn't getting anywhere.
+    private static final int MAX_ARRIVALS_WITHOUT_MOVING = 3;
+    // Longer than it should ever take to go somewhere or pick something up, whatever it's mining.
+    private static final int NOTHING_DONE_TICKS = 20 * 60 * 3;
+    private static final int GETTING_SOMEWHERE_BLOCKS = 8;
     // Blocks it couldn't get to might be fine from somewhere else, once it's moved on.
     private static final int OUT_OF_REACH_MEMORY_TICKS = 20 * 60 * 5;
     // Enough to be clear of what it was stuck in, and it mines on from there.
     private static final int CLIMB_BLOCKS = 6;
+    // After a walk that had to build, the next one carries on building if it's going no further than this. Otherwise
+    // every walk finds out again: a search fails, it waits, and only then tries with blocks. That was most of the time
+    // it spent building, and nearly all of it with nothing happening. Any further, and it climbs on pillars in the open.
+    private static final int KEEP_BUILDING_BLOCKS = 12;
     // In a row, without getting any mining done in between.
     private static final int MAX_TIMES_STUCK = 5;
     private static final int WAYS_TO_WALK_AWAY = 4;
@@ -94,6 +103,13 @@ public class BlockMinerModule extends Module {
     private long miningStartedTick;
     private final Set<BlockPos> placesBeen = new HashSet<>();
     private long lastNewPlaceTick;
+    private int @Nullable [] walkStartedAt;
+    private int placementsWhenWalkStarted;
+    private boolean builtOnLastWalk;
+    private int arrivalsWithoutMoving;
+    private int @Nullable [] lastProgressAt;
+    private int carryingAtLastProgress;
+    private int ticksWithNothingDone;
     private volatile long nextMineTick;
     private boolean reportedBreakingOff;
     private boolean reportedNothingChosen;
@@ -239,6 +255,8 @@ public class BlockMinerModule extends Module {
         miningArea = null;
         outOfReach.clear();
         reportedExploring = false;
+        arrivalsWithoutMoving = 0;
+        lastProgressAt = null;
     }
 
     // ----------------------------------------------------------------------------------------
@@ -249,6 +267,10 @@ public class BlockMinerModule extends Module {
         // A command on another thread can clear this at any moment.
         PathingRequestFuture current = mining;
         if (current != null) {
+            if (hasGotNothingDoneForAWhile()) {
+                gotStuck();
+                return;
+            }
             if (!current.isCompleted()) {
                 // Reads as somewhere it couldn't get to, next time round. Nothing else would end it.
                 if (isMiningOverhead() ? tick - miningStartedTick > MINING_OVERHEAD_TIMEOUT_TICKS : isGettingNowhere()) {
@@ -257,7 +279,7 @@ public class BlockMinerModule extends Module {
                 }
                 return;
             }
-            miningEnded(current.getNow());
+            miningEnded(current.getNow() && !keepsArrivingWithoutMoving());
         }
         // Finding out why it ended can turn the module off.
         if (!PLUGIN_CONFIG.enabled || tick < nextMineTick || BARITONE.isActive()) return;
@@ -322,6 +344,8 @@ public class BlockMinerModule extends Module {
         currentBlocks = new BlockOptionalMetaLookup(blocks);
         currentGoal = BlockScan.miningGoal(currentBlocks, miningArea, Sets.union(outOfReach, placedBlocks.positions()));
         if (currentGoal == null) {
+            if (builtOnLastWalk) climbingBlocks.stopAllowing();
+            builtOnLastWalk = false;
             if (!reportedExploring) info("None of {} in the loaded chunks, so going to look for some", names);
             reportedExploring = true;
             miningArea = null;
@@ -330,10 +354,15 @@ public class BlockMinerModule extends Module {
             return;
         }
         reportedExploring = false;
+        if (builtOnLastWalk) {
+            builtOnLastWalk = false;
+            if (!anyNearTheBot(currentGoal.blocks(), KEEP_BUILDING_BLOCKS)) climbingBlocks.stopAllowing();
+        }
         miningArea = currentGoal.area();
         miningStartedTick = tick;
         if (currentGoal.goal() == null) {
             BlockPos block = currentGoal.blocks().getFirst();
+            walkStartedAt = null;
             mining = BARITONE.breakBlock(block.x(), block.y(), block.z(), true);
             status = "Mining";
             return;
@@ -344,7 +373,53 @@ public class BlockMinerModule extends Module {
 
     private void walkTo(Goal goal) {
         placesBeen.clear();
+        walkStartedAt = bot.position();
+        placementsWhenWalkStarted = placedBlocks.placements();
         mining = BARITONE.pathTo(goal);
+    }
+
+    private boolean anyNearTheBot(List<BlockPos> blocks, int distance) {
+        int[] at = bot.position();
+        return blocks.stream().anyMatch(pos ->
+            Math.abs(pos.x() - at[0]) + Math.abs(pos.y() - at[1]) + Math.abs(pos.z() - at[2]) <= distance);
+    }
+
+    /**
+     * A goal it's already at gives a walk that's over as soon as it starts, and the pathfinder calls that getting
+     * there. Sending it there again gets the same answer, which is how it stood on an ender chest all night.
+     */
+    private boolean keepsArrivingWithoutMoving() {
+        if (walkStartedAt == null || !Arrays.equals(walkStartedAt, bot.position())) {
+            arrivalsWithoutMoving = 0;
+            return false;
+        }
+        if (++arrivalsWithoutMoving < MAX_ARRIVALS_WITHOUT_MOVING) return false;
+        arrivalsWithoutMoving = 0;
+        warn("Keeps arriving at {} without going anywhere, so giving up on that", whereTheBotIs());
+        return true;
+    }
+
+    /**
+     * However it comes about, a long time without going anywhere or picking anything up means something's wrong, and
+     * nothing else would notice if every walk looked like it worked. This is for whatever nobody's thought of yet.
+     * It only counts while it's meant to be mining, so not on errands, in fights or waiting on a setting.
+     */
+    private boolean hasGotNothingDoneForAWhile() {
+        int[] now = bot.position();
+        int carrying = space.targetItemsCarried();
+        int[] from = lastProgressAt;
+        if (from == null || carrying != carryingAtLastProgress
+            || Math.abs(now[0] - from[0]) + Math.abs(now[1] - from[1]) + Math.abs(now[2] - from[2]) >= GETTING_SOMEWHERE_BLOCKS) {
+            lastProgressAt = now;
+            carryingAtLastProgress = carrying;
+            ticksWithNothingDone = 0;
+            return false;
+        }
+        // Those have their own ways of giving up.
+        if (++ticksWithNothingDone < NOTHING_DONE_TICKS || climbingOut || walkingAway) return false;
+        warn("Hasn't gone anywhere or picked anything up for {} minutes", NOTHING_DONE_TICKS / (20 * 60));
+        lastProgressAt = null;
+        return true;
     }
 
     /**
@@ -469,7 +544,10 @@ public class BlockMinerModule extends Module {
             nextMineTick = 0;
             // Only getting some mining done shows that it's got over whatever was stopping it.
             if (currentGoal != null && currentGoal.onBotsLevel()) timesStuck = 0;
-            climbingBlocks.stopAllowing();
+            // Having to build to get here means it'll likely have to for what's next to it, too.
+            builtOnLastWalk = walkStartedAt != null && placedBlocks.placements() > placementsWhenWalkStarted
+                && climbingBlocks.canBuild();
+            if (!builtOnLastWalk) climbingBlocks.stopAllowing();
             return;
         }
         // Before giving up on anything, it sees whether it can get there by building.

@@ -7,6 +7,7 @@ import org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Where the bot has put blocks down, so that it doesn't go back and mine them. It builds with what it's been
@@ -21,6 +22,7 @@ final class PlacedBlocks {
     private static final int MOST_TO_REMEMBER = 20_000;
 
     private final Set<BlockPos> positions = ConcurrentHashMap.newKeySet();
+    private final AtomicInteger placements = new AtomicInteger();
 
     /**
      * The bot has right-clicked this face of a block, which puts what it's holding in the space next to that
@@ -33,6 +35,7 @@ final class PlacedBlocks {
         if (!block.replaceable()) return;
         if (positions.size() >= MOST_TO_REMEMBER) positions.clear();
         positions.add(next);
+        placements.incrementAndGet();
     }
 
     private static BlockPos next(int x, int y, int z, Direction face) {
@@ -48,5 +51,10 @@ final class PlacedBlocks {
 
     Set<BlockPos> positions() {
         return positions;
+    }
+
+    /** How many it's put down so far, which carries on counting when it forgets where they all were. */
+    int placements() {
+        return placements.get();
     }
 }

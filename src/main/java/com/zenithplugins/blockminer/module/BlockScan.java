@@ -25,13 +25,17 @@ import org.geysermc.mcprotocollib.protocol.data.game.chunk.ChunkSection;
 import org.geysermc.mcprotocollib.protocol.data.game.chunk.palette.Palette;
 import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.stream.IntStream;
 
+import static com.zenith.Globals.BARITONE;
 import static com.zenith.Globals.CACHE;
 import static com.zenith.Globals.CONFIG;
 
@@ -58,6 +62,9 @@ final class BlockScan {
     // Given more to choose from, the pathfinder goes for whichever is easiest to get to. With plenty about, there's
     // always another that's easier than the ones above it, so it wanders off and leaves them behind.
     private static final int NEAREST_TO_GO_FOR = 4;
+    // Enough to find the top of anything worth going to the top of. It looks highest first, so it gets there
+    // long before it's looked through all of something big, and this is only about 16 blocks each way.
+    private static final int MOST_OF_A_CLUMP_TO_LOOK_THROUGH = 4096;
     private static final int MAX_CHUNKS_AWAY = 32;
 
     // Y -58 in the overworld. Bedrock goes up to 4 above the bottom of the world, so that leaves a block
@@ -219,6 +226,15 @@ final class BlockScan {
     }
 
     /**
+     * Where the pathfinder says the bot's standing, and it goes by this to say a goal's been reached. On something
+     * less than a block high, like an ender chest or soul sand, that's the block above the one its height rounds
+     * down to. Going by that instead has sent it to where it already is, over and over, all night.
+     */
+    private static BlockPos feet() {
+        return BARITONE.getPlayerContext().playerFeet();
+    }
+
+    /**
      * What the bot does next. Nothing below the lowest level counts, whatever it is.
      *
      * <p>A block that's everywhere gets mined from the top down, a section at a time. It starts on the highest
@@ -227,20 +243,21 @@ final class BlockScan {
      * are none left it moves on to the top of the next section. Going down, it never has to climb until
      * it's finished the whole section.
      *
-     * <p>Anything else is worth going to look for, wherever it is in the loaded chunks. It clears what's around it
-     * as it goes: first what it can reach above it, and then only ever the next few nearest.
+     * <p>Anything else is worth going to look for, wherever it is in the loaded chunks. It clears what's around it as
+     * it goes: first what it can reach above it, and then only ever the next few nearest. Each of those is part of a
+     * clump of what it's after, sometimes just the one block. If that's taller than it can reach from the bottom of
+     * it, it goes for the top instead, as mined from the bottom up, the top would end up out of reach in the roof of
+     * the hole it's dug.
      *
      * @param outOfReach blocks it's already failed to get to
      * @return null if there's nothing it can go for in the loaded chunks
      */
     static @Nullable MiningGoal miningGoal(BlockOptionalMetaLookup filter, MiningArea area, Set<BlockPos> outOfReach) {
-        PlayerCache player = CACHE.getPlayerCache();
+        BlockPos feet = feet();
 
         // On the same setting Zenith's miner does this on. Everything else can wait.
         if (CONFIG.client.extra.pathfinder.mineProcessExitLavaGoal && MovementHelper.isPlayerTouchingLava()) {
-            Goal awayFromLava = new GoalAvoidBlocks(
-                MathHelper.floorI(player.getX()), MathHelper.floorI(player.getY()), MathHelper.floorI(player.getZ()),
-                BlockRegistry.LAVA);
+            Goal awayFromLava = new GoalAvoidBlocks(feet.x(), feet.y(), feet.z(), BlockRegistry.LAVA);
             return new MiningGoal(awayFromLava, List.of(), false, area);
         }
 
@@ -257,16 +274,103 @@ final class BlockScan {
             }
         }
 
-        int botX = MathHelper.floorI(player.getX());
-        int botY = MathHelper.floorI(player.getY());
-        int botZ = MathHelper.floorI(player.getZ());
-        BlockPos overhead = blockToMineOverhead(filter, botX, botY, botZ, outOfReach, context);
+        BlockPos overhead = blockToMineOverhead(filter, feet.x(), feet.y(), feet.z(), outOfReach, context);
         if (overhead != null) return new MiningGoal(null, List.of(overhead), true, null);
 
         List<BlockPos> blocks = choose(nearest(filter, GOAL_CANDIDATES, lowestLevel(), Integer.MAX_VALUE, null), outOfReach, context);
         if (blocks.isEmpty()) return null;
-        if (blocks.size() > NEAREST_TO_GO_FOR) blocks = blocks.subList(0, NEAREST_TO_GO_FOR);
-        return new MiningGoal(goalInOrUnderBlocks(blocks, botX, botY, botZ, context), blocks, false, null);
+        blocks = topsOfClumps(filter, blocks.subList(0, Math.min(NEAREST_TO_GO_FOR, blocks.size())), feet, outOfReach, context);
+        return new MiningGoal(goalInOrUnderBlocks(blocks, feet.x(), feet.y(), feet.z(), context), blocks, false, null);
+    }
+
+    /**
+     * What to go for instead of these: the top of each of their clumps, and then more from the top of the first
+     * clump, up to the same number. A clump it could reach all of from the bottom gets mined as it is, nearest
+     * first, which leaves less behind, and so does one where it can't go for any of the top.
+     */
+    private static List<BlockPos> topsOfClumps(
+        BlockOptionalMetaLookup filter, List<BlockPos> nearest, BlockPos feet, Set<BlockPos> outOfReach, CalculationContext context
+    ) {
+        List<Set<BlockPos>> tallClumps = new ArrayList<>();
+        List<Set<BlockPos>> otherClumps = new ArrayList<>();
+        List<List<BlockPos>> tops = new ArrayList<>();
+        for (BlockPos pos : nearest) {
+            if (tallClumps.stream().anyMatch(clump -> clump.contains(pos))) continue;
+            if (otherClumps.stream().noneMatch(clump -> clump.contains(pos))) {
+                Set<BlockPos> clump = clumpAround(filter, pos);
+                if (tooTallToReachFromTheBottom(clump)) {
+                    tallClumps.add(clump);
+                    List<BlockPos> top = topOf(clump, feet, outOfReach, context);
+                    tops.add(top.isEmpty() ? List.of(pos) : top);
+                    continue;
+                }
+                otherClumps.add(clump);
+            }
+            tops.add(List.of(pos));
+        }
+        List<BlockPos> chosen = new ArrayList<>();
+        for (List<BlockPos> top : tops) chosen.add(top.getFirst());
+        for (BlockPos pos : tops.getFirst()) {
+            if (chosen.size() < NEAREST_TO_GO_FOR && !chosen.contains(pos)) chosen.add(pos);
+        }
+        return chosen;
+    }
+
+    /** Standing at the bottom of it, it can reach up to the underside of a block 6 above its feet. */
+    private static boolean tooTallToReachFromTheBottom(Set<BlockPos> clump) {
+        int lowest = Integer.MAX_VALUE;
+        int highest = Integer.MIN_VALUE;
+        for (BlockPos pos : clump) {
+            lowest = Math.min(lowest, pos.y());
+            highest = Math.max(highest, pos.y());
+        }
+        return highest - lowest >= ROOM_HEIGHT;
+    }
+
+    /** The highest of these, nearest the bot first, leaving out any it can't or shouldn't get to. */
+    private static List<BlockPos> topOf(Set<BlockPos> clump, BlockPos feet, Set<BlockPos> outOfReach, CalculationContext context) {
+        return clump.stream()
+            // Standing in it already, so a walk to it would end at once without breaking it.
+            .filter(pos -> !(pos.x() == feet.x() && pos.z() == feet.z() && (pos.y() == feet.y() || pos.y() == feet.y() + 1)))
+            .filter(pos -> !outOfReach.contains(pos))
+            .filter(pos -> MineProcess.plausibleToBreak(context, pos))
+            .sorted(Comparator.comparingInt(BlockPos::y).reversed().thenComparingDouble(pos -> distanceSq(pos, feet)))
+            .limit(NEAREST_TO_GO_FOR)
+            .toList();
+    }
+
+    /**
+     * What's joined to this block, up to as much as it's worth looking through. It looks at the highest it's found
+     * so far first, so it gets to the top of something big without having to look through all of it.
+     */
+    private static Set<BlockPos> clumpAround(BlockOptionalMetaLookup filter, BlockPos start) {
+        int lowestLevel = lowestLevel();
+        Set<BlockPos> clump = new HashSet<>();
+        PriorityQueue<BlockPos> highestFirst = new PriorityQueue<>(Comparator.comparingInt(BlockPos::y).reversed());
+        clump.add(start);
+        highestFirst.add(start);
+        while (!highestFirst.isEmpty() && clump.size() < MOST_OF_A_CLUMP_TO_LOOK_THROUGH) {
+            BlockPos pos = highestFirst.poll();
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        BlockPos next = new BlockPos(pos.x() + dx, pos.y() + dy, pos.z() + dz);
+                        if (next.y() >= lowestLevel && !clump.contains(next) && filter.has(World.getBlock(next))) {
+                            clump.add(next);
+                            highestFirst.add(next);
+                        }
+                    }
+                }
+            }
+        }
+        return clump;
+    }
+
+    private static double distanceSq(BlockPos pos, BlockPos other) {
+        double dx = pos.x() - other.x();
+        double dy = pos.y() - other.y();
+        double dz = pos.z() - other.z();
+        return dx * dx + dy * dy + dz * dz;
     }
 
     /** What to do next in this section, or null if there's nothing left to do in it. */
@@ -286,15 +390,12 @@ final class BlockScan {
     private static @Nullable MiningGoal goalOnLevel(
         BlockOptionalMetaLookup filter, MiningArea area, Set<BlockPos> outOfReach, CalculationContext context
     ) {
-        PlayerCache player = CACHE.getPlayerCache();
-        int botX = MathHelper.floorI(player.getX());
-        int botY = MathHelper.floorI(player.getY());
-        int botZ = MathHelper.floorI(player.getZ());
+        BlockPos feet = feet();
         int level = area.level();
-        boolean onLevel = botY == level;
+        boolean onLevel = feet.y() == level;
 
         if (onLevel) {
-            BlockPos overhead = blockToMineOverhead(filter, botX, botY, botZ, outOfReach, context);
+            BlockPos overhead = blockToMineOverhead(filter, feet.x(), feet.y(), feet.z(), outOfReach, context);
             if (overhead != null) return new MiningGoal(null, List.of(overhead), true, area);
         }
         List<BlockPos> blocks = chooseOnLevel(nearest(filter, GOAL_CANDIDATES, level, level + 1, area), level, outOfReach, context);
@@ -348,10 +449,10 @@ final class BlockScan {
     }
 
     /**
-     * The highest layer of this section, no higher than {@code highestY} and not below the lowest level, with
-     * more than a few of what it's after, making up at least as much as everything else solid there. Even
-     * the commonest ores are nothing like that much of a layer, so this is also what tells a block that's
-     * everywhere from one worth going to look for.
+     * The highest layer of this section to mine, no higher than {@code highestY} and not below the lowest level. That
+     * comes from the highest layer with more than a few of what it's after, making up at least as much as
+     * everything else solid there, and then the top of what's joined to that. Even the commonest ores are nothing
+     * like that much of a layer, so this is also what tells a block that's everywhere from one worth going to look for.
      *
      * @return null if there are none
      */
@@ -369,11 +470,91 @@ final class BlockScan {
             }
             LayerCount layer = LayerCount.of(filter, area, y);
             if (layer.wanted() >= layer.unwanted() && layer.wanted() * 100 >= layer.cells() * LEAST_PERCENT_OF_A_LAYER) {
-                return y;
+                return topOfWhatsJoinedTo(filter, area, y, highestY);
             }
             y--;
         }
         return null;
+    }
+
+    /**
+     * The highest layer, no higher than {@code highestY}, with something it's after joined to what's on layer
+     * {@code y}, going up through touching blocks. The top of a big pocket of something can be well above where
+     * it's the most of what's around. Start from there instead and all that's left in the roof of a big hole.
+     */
+    private static int topOfWhatsJoinedTo(BlockOptionalMetaLookup filter, MiningArea area, int y, int highestY) {
+        DimensionData dimension = World.getCurrentDimension();
+        int ceiling = Math.min(highestY, dimension.minY() + dimension.height() - 1);
+        int size = area.radius() * 2 + 1;
+        boolean[][] joined = new boolean[size][size];
+        forEachCell(area, (x, z) -> {
+            if (filter.has(World.getBlock(x, y, z))) joined[x - area.centreX() + area.radius()][z - area.centreZ() + area.radius()] = true;
+        });
+        boolean[][] below = joined;
+        int top = y;
+        for (int above = y + 1; above <= ceiling; above++) {
+            boolean[][] layer = joinedOnLayer(filter, area, above, below);
+            if (layer == null) break;
+            below = layer;
+            top = above;
+        }
+        return top;
+    }
+
+    /** What it's after on this layer that's over or beside what's joined below, or touching that. Null if there's nothing. */
+    private static boolean @Nullable [][] joinedOnLayer(BlockOptionalMetaLookup filter, MiningArea area, int y, boolean[][] below) {
+        int size = below.length;
+        boolean[][] layer = new boolean[size][size];
+        Deque<int[]> toSpread = new ArrayDeque<>();
+        forEachCell(area, (x, z) -> {
+            int i = x - area.centreX() + area.radius();
+            int j = z - area.centreZ() + area.radius();
+            if (touches(below, i, j) && filter.has(World.getBlock(x, y, z))) {
+                layer[i][j] = true;
+                toSpread.add(new int[]{i, j});
+            }
+        });
+        if (toSpread.isEmpty()) return null;
+        while (!toSpread.isEmpty()) {
+            int[] cell = toSpread.poll();
+            for (int di = -1; di <= 1; di++) {
+                for (int dj = -1; dj <= 1; dj++) {
+                    int i = cell[0] + di;
+                    int j = cell[1] + dj;
+                    if (i < 0 || j < 0 || i >= size || j >= size || layer[i][j]) continue;
+                    int x = i - area.radius() + area.centreX();
+                    int z = j - area.radius() + area.centreZ();
+                    if (area.contains(x, z) && filter.has(World.getBlock(x, y, z))) {
+                        layer[i][j] = true;
+                        toSpread.add(new int[]{i, j});
+                    }
+                }
+            }
+        }
+        return layer;
+    }
+
+    private static boolean touches(boolean[][] cells, int i, int j) {
+        for (int di = -1; di <= 1; di++) {
+            for (int dj = -1; dj <= 1; dj++) {
+                int ni = i + di;
+                int nj = j + dj;
+                if (ni >= 0 && nj >= 0 && ni < cells.length && nj < cells.length && cells[ni][nj]) return true;
+            }
+        }
+        return false;
+    }
+
+    private interface CellVisitor {
+        void visit(int x, int z);
+    }
+
+    private static void forEachCell(MiningArea area, CellVisitor visitor) {
+        for (int x = area.centreX() - area.radius(); x <= area.centreX() + area.radius(); x++) {
+            for (int z = area.centreZ() - area.radius(); z <= area.centreZ() + area.radius(); z++) {
+                if (area.contains(x, z)) visitor.visit(x, z);
+            }
+        }
     }
 
     private static boolean sectionMightHold(MiningArea area, int section, IntSet states) {
@@ -511,11 +692,10 @@ final class BlockScan {
     static List<BlockPos> nearest(
         BlockOptionalMetaLookup filter, int count, int lowestY, int highestY, @Nullable MiningArea area
     ) {
-        PlayerCache player = CACHE.getPlayerCache();
+        BlockPos feet = feet();
         DimensionData dimension = World.getCurrentDimension();
         ClosestBlocks closest = new ClosestBlocks(
-            MathHelper.floorI(player.getX()), MathHelper.floorI(player.getY()), MathHelper.floorI(player.getZ()),
-            filter.getBlockStateIds(), count, lowestY, highestY, area);
+            feet.x(), feet.y(), feet.z(), filter.getBlockStateIds(), count, lowestY, highestY, area);
         int[] sections = sectionsNearestFirst(dimension, (closest.botY - dimension.minY()) >> 4);
 
         int centreChunkX = closest.botX >> 4;
