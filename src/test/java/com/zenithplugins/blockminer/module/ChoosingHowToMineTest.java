@@ -21,6 +21,8 @@ import org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand;
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponentTypes;
 import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponents;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.InteractAction;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundInteractPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemOnPacket;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -743,7 +745,10 @@ class ChoosingHowToMineTest {
         }
 
         killAuraHasATarget(true);
-        tick(2 * A_MINUTE);
+        for (int hit = 0; hit < 24; hit++) {
+            killAuraHits();
+            tick(A_MINUTE / 12);
+        }
         killAuraHasATarget(false);
         waitForPath();
 
@@ -760,6 +765,69 @@ class ChoosingHowToMineTest {
         Field target = KillAura.class.getDeclaredField("attackTarget");
         target.setAccessible(true);
         target.set(killAura, new WeakReference<EntityLiving>(hasATarget ? piglin : null));
+    }
+
+    /** The bot attacking something, the way the kill aura does when it gets a hit in. */
+    private void killAuraHits() {
+        module.getClientPacketHandlerCodec().getStateCodecs().get(ProtocolState.GAME).handlePostOutgoing(
+            new ServerboundInteractPacket(42, InteractAction.ATTACK, false), null);
+    }
+
+    @Test
+    void standsStillAsLongAsTheKillAuraKeepsGettingHitsIn() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+        killAuraHasATarget(true);
+
+        long until = System.currentTimeMillis() + 5_000;
+        while (System.currentTimeMillis() < until) {
+            killAuraHits();
+            tick();
+            assertFalse(followingAPath(), "it should leave it to the kill aura while it's hitting");
+            Thread.sleep(200);
+        }
+        killAuraHasATarget(false);
+    }
+
+    /** What it did with piglins at the edge of the kill aura's reach: stood there being shot while it never hit one. */
+    @Test
+    void carriesOnIfTheKillAuraIsntGettingAnyHitsIn() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+        killAuraHasATarget(true);
+        tick();
+        assertFalse(followingAPath());
+        long stoppedAt = System.currentTimeMillis();
+
+        waitForPath();
+
+        assertTrue(System.currentTimeMillis() - stoppedAt >= 2_900, "it should give it a moment first");
+        assertFalse(module.status().startsWith("Leaving it to the kill aura"), "status: " + module.status());
+        killAuraHasATarget(false);
+    }
+
+    /** Right-clicking something isn't hitting it. */
+    @Test
+    void onlyAnAttackCountsAsAHit() throws Exception {
+        want("cobbled_deepslate");
+        TestWorld.putBotAt(8.5, -30, 8.5);
+        waitForPath();
+        killAuraHasATarget(true);
+        tick();
+        assertFalse(followingAPath());
+
+        long until = System.currentTimeMillis() + 10_000;
+        while (!followingAPath() && System.currentTimeMillis() < until) {
+            module.getClientPacketHandlerCodec().getStateCodecs().get(ProtocolState.GAME).handlePostOutgoing(
+                new ServerboundInteractPacket(42, InteractAction.INTERACT, false), null);
+            tick();
+            Thread.sleep(50);
+        }
+
+        assertTrue(followingAPath(), "it should have carried on");
+        killAuraHasATarget(false);
     }
 
     @Test

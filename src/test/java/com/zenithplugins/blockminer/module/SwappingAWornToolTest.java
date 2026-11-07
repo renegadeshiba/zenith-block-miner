@@ -563,7 +563,7 @@ class SwappingAWornToolTest {
         };
         inventory().reset();
         CACHE.getPlayerCache().setHeldItemSlot(0);
-        fights = new Fights(() -> fightGoingOn, System::currentTimeMillis, () -> { });
+        fights = new Fights(() -> fightGoingOn, System::currentTimeMillis, () -> { }, () -> { });
         bot = new Bot(module, () -> true, new PretendPathfinder(), new PretendInventoryManager(), fights);
         space = new InventorySpace(module, bot);
         StorageErrand storage = new StorageErrand(module, bot, space, new CraftingErrand(module, bot, space));

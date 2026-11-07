@@ -24,6 +24,8 @@ import com.zenithplugins.blockminer.rules.TargetItems;
 import com.zenithplugins.blockminer.rules.TargetItems.ToolNeed;
 import com.zenithplugins.blockminer.rules.ToolRules;
 import org.geysermc.mcprotocollib.protocol.data.ProtocolState;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.InteractAction;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundInteractPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemOnPacket;
 import org.jspecify.annotations.Nullable;
 
@@ -81,7 +83,10 @@ public class BlockMinerModule extends Module {
     private static final int TOOL_CHECK_INTERVAL_TICKS = 20;
     private static final int STARTUP_WAIT_TICKS = 20 * 5;
 
-    private final Fights fights = new Fights(() -> warn("The kill aura has been fighting for a minute, so carrying on alongside it"));
+    private final Fights fights = new Fights(
+        () -> warn("The kill aura has been fighting for a minute, so carrying on alongside it"),
+        () -> warn("The kill aura has something to fight but hasn't hit it in 3 seconds, so carrying on. It's"
+            + " most likely at the edge of its reach, like a piglin with a crossbow keeping its distance"));
     private final Bot bot = new Bot(this, fights);
     private final InventorySpace space = new InventorySpace(this, bot);
     private final CraftingErrand crafting = new CraftingErrand(this, bot, space);
@@ -151,6 +156,11 @@ public class BlockMinerModule extends Module {
                     ServerboundUseItemOnPacket.class,
                     (PostOutgoingPacketHandler<ServerboundUseItemOnPacket, ClientSession>) (packet, session) ->
                         placedBlocks.clicked(packet.getX(), packet.getY(), packet.getZ(), packet.getFace()))
+                .postOutbound(
+                    ServerboundInteractPacket.class,
+                    (PostOutgoingPacketHandler<ServerboundInteractPacket, ClientSession>) (packet, session) -> {
+                        if (packet.getAction() == InteractAction.ATTACK) fights.hitLanded();
+                    })
                 .build())
             .build();
     }

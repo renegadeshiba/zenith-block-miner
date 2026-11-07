@@ -308,10 +308,16 @@ that's better than leaving a full shulker box on the ground with nowhere to go.
 ### When something attacks it
 
 Block Miner doesn't fight anything itself. That's up to ZenithProxy's kill aura, and the bot makes way for it:
-while the kill aura has something in reach, the bot stops whatever it's doing and stands there, whether it's
-mining, walking away or on an errand. It starts again 2 seconds after the last target, which gives anything
-that got knocked back time to come back. Without this, the pathfinder gets a turn between the kill aura's hits,
-and walks off, turns away, or swaps back to its pickaxe.
+while the kill aura has something in reach and is getting hits in, the bot stops whatever it's doing and stands
+there, whether it's mining, walking away or on an errand. It starts again 2 seconds after the last target, which
+gives anything that got knocked back time to come back. Without this, the pathfinder gets a turn between the kill
+aura's hits, and walks off, turns away, or swaps back to its pickaxe.
+
+**It only stands still while the kill aura is hitting something.** It gives it 3 seconds to get a hit in, at the
+start of a fight and after each hit. If it hasn't, the bot carries on with what it was doing and logs it, at most
+every 5 minutes. A mob at the edge of the kill aura's reach, like a piglin with a crossbow keeping its distance,
+can give it something to fight over and over without it ever landing a hit, and the bot would stand there being
+shot.
 
 If a fight is still going after a minute, the bot goes back to work alongside it and logs a warning, in case
 it's something the kill aura can never finish off, like a mob it can reach but not hurt.
